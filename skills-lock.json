@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "android-kotlin": {
+      "source": "maroffo/claude-forge",
+      "sourceType": "github",
+      "skillPath": "skills/android-kotlin/SKILL.md",
+      "computedHash": "486cc2f613cb3321a365805d41eb986174aff19feca02e636898db02bf10a884"
+    },
+    "android-kotlin-core": {
+      "source": "FJRG2007/enigma",
+      "sourceType": "github",
+      "skillPath": "assets/skills-registry/android-kotlin-core/SKILL.md",
+      "computedHash": "d9c552a3cb35db956f4d9162f15ffbbcea862451198f38f51d58d3ecd6a0c2dc"
+    },
+    "antigravity-skill-orchestrator": {
+      "source": "JantonioFC/skillsbank",
+      "sourceType": "github",
+      "skillPath": "skills/antigravity-skill-orchestrator/SKILL.md",
+      "computedHash": "376293e70301dc6234fc1ea573c20d96455769543e988f70cd9da4afa95a0622"
+    },
+    "frontend-ui-design": {
+      "source": "jscraik/Agent-Skills",
+      "sourceType": "github",
+      "skillPath": "skills/frontend-ui/frontend-ui-design/SKILL.md",
+      "computedHash": "07879733644d4cab47abc74ea9046384ca1d18712a1cc9eaac8cf6c4992e2783"
+    },
+    "grill-me": {
+      "source": "stevesolun/ctx",
+      "sourceType": "github",
+      "skillPath": "imported-skills/mattpocock/grill-me/SKILL.md",
+      "computedHash": "784f0dbb7403b0f00324bce9a112f715342777a0daee7bbb7385f9c6f0a170ea"
+    },
+    "hyperplan": {
+      "source": "code-yeongyu/oh-my-openagent",
+      "sourceType": "github",
+      "skillPath": ".agents/skills/hyperplan/SKILL.md",
+      "computedHash": "d2746930ff626ecf8b67cbab2efeffdf1ce50cc68fffc8579f55d1e557ac59c7"
+    }
+  }
+}

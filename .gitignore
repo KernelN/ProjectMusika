@@ -1,0 +1,9 @@
+.antigravity_artifacts/
+.gradle/
+build/
+app/build/
+local.properties
+*.iml
+.idea/
+.DS_Store
+app/*.jks
