@@ -39,6 +39,7 @@ data class TrackEntity(
     val dateAdded: Long = System.currentTimeMillis(),
     val year: Int? = null,
     val genre: String? = null,
+    val artworkUri: String? = null,
     val normalizedKey: String, // lowercase: artist|album|title
     val webMatchPending: Boolean = false
 ) {
@@ -66,6 +67,7 @@ data class TrackEntity(
         year = year,
         genre = genre,
         parentFolderPath = parentFolderPath,
+        artworkUri = artworkUri,
         webMatchPending = webMatchPending,
         alternateVariantsCount = alternateVariantsCount
     )
@@ -93,6 +95,7 @@ data class TrackEntity(
             dateAdded = track.dateAdded,
             year = track.year,
             genre = track.genre,
+            artworkUri = track.artworkUri,
             normalizedKey = track.normalizedKey,
             webMatchPending = track.webMatchPending
         )

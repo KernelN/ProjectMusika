@@ -85,7 +85,14 @@ class SettingsPreferences(context: Context) {
     )
     val albumSortOption: StateFlow<AlbumSortOption> = _albumSortOption.asStateFlow()
 
-    private val _artistSortOption = MutableStateFlow(ArtistSortOption.ALPHABETICAL)
+    private val _artistSortOption = MutableStateFlow(
+        runCatching {
+            ArtistSortOption.valueOf(
+                prefs.getString(KEY_ARTIST_SORT, ArtistSortOption.ALPHABETICAL.name)
+                    ?: ArtistSortOption.ALPHABETICAL.name
+            )
+        }.getOrDefault(ArtistSortOption.ALPHABETICAL)
+    )
     val artistSortOption: StateFlow<ArtistSortOption> = _artistSortOption.asStateFlow()
 
     private val _folderSortOption = MutableStateFlow(
@@ -134,6 +141,11 @@ class SettingsPreferences(context: Context) {
         _albumSortOption.value = option
     }
 
+    fun setArtistSortOption(option: ArtistSortOption) {
+        prefs.edit().putString(KEY_ARTIST_SORT, option.name).apply()
+        _artistSortOption.value = option
+    }
+
     fun setFolderSortOption(option: FolderSortOption) {
         prefs.edit().putString(KEY_FOLDER_SORT, option.name).apply()
         _folderSortOption.value = option
@@ -160,6 +172,7 @@ class SettingsPreferences(context: Context) {
         const val KEY_LOOP_MODE = "loop_mode"
         const val KEY_SONG_SORT = "song_sort"
         const val KEY_ALBUM_SORT = "album_sort"
+        const val KEY_ARTIST_SORT = "artist_sort"
         const val KEY_FOLDER_SORT = "folder_sort"
     }
 }

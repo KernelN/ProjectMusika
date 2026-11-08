@@ -3,6 +3,7 @@ package com.musika.player.data.repository
 import com.musika.player.core.model.Album
 import com.musika.player.core.model.AlbumSortOption
 import com.musika.player.core.model.Artist
+import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
@@ -72,7 +73,7 @@ class LibraryRepository(
      */
     fun getDeduplicatedSongsFlow(sortOption: SongSortOption): Flow<List<DeduplicatedTrackGroup>> {
         val sourceFlow = when (sortOption) {
-            SongSortOption.ALPHABETICAL -> trackDao.getAllTracksAlphabetical()
+            SongSortOption.ALPHABETICAL, SongSortOption.DIRECTORY -> trackDao.getAllTracksAlphabetical()
             SongSortOption.ALBUM -> trackDao.getAllTracksByAlbum()
             SongSortOption.ARTIST -> trackDao.getAllTracksByArtist()
         }
@@ -92,12 +93,18 @@ class LibraryRepository(
                         .thenBy { it.primaryTrack.discNumber }
                         .thenBy { it.primaryTrack.trackNumber }
                 )
+                SongSortOption.DIRECTORY -> groups.sortedWith { a, b ->
+                    val pathA = a.primaryTrack.relativePath.ifBlank { a.primaryTrack.filePath }
+                    val pathB = b.primaryTrack.relativePath.ifBlank { b.primaryTrack.filePath }
+                    val cmp = MusicalRootScanner.HierarchicalPathComparator.compare(pathA, pathB)
+                    if (cmp != 0) cmp else a.primaryTrack.title.lowercase(Locale.US).compareTo(b.primaryTrack.title.lowercase(Locale.US))
+                }
             }
         }
     }
 
     /**
-     * Streams deduplicated Albums sorted by Alphabetical or Artist (Specification #3, #4, #5, #6).
+     * Streams deduplicated Albums sorted by Alphabetical, Artist, or Directory (Specification #3, #4, #5, #6).
      * Automatically detects multi-disc albums and aggregates all folder paths spanned by the album.
      */
     fun getAlbumsFlow(sortOption: AlbumSortOption): Flow<List<Album>> {
@@ -105,7 +112,9 @@ class LibraryRepository(
             val rawTracks = entities.map { it.toDomainModel() }
             val groupedByAlbum = rawTracks.groupBy { it.album.trim().lowercase(Locale.US) }
 
-            val albums = groupedByAlbum.values.mapNotNull { albumRawTracks ->
+            data class AlbumWithPrimaryRelPath(val album: Album, val earliestRelPath: String)
+
+            val albumsWithPaths = groupedByAlbum.values.mapNotNull { albumRawTracks ->
                 if (albumRawTracks.isEmpty()) return@mapNotNull null
                 val dedupedGroups = FormatDeduplicator.deduplicateTracks(albumRawTracks)
                 val primaryTracks = dedupedGroups.map { it.primaryTrack }
@@ -113,7 +122,11 @@ class LibraryRepository(
                 val folderPaths = albumRawTracks.map { it.parentFolderPath }
                     .filter { it.isNotBlank() }
                     .distinct()
-                    .sorted()
+                    .sortedWith(MusicalRootScanner.HierarchicalPathComparator)
+                val earliestRelPath = albumRawTracks
+                    .map { it.relativePath.ifBlank { it.filePath } }
+                    .minWithOrNull(MusicalRootScanner.HierarchicalPathComparator)
+                    ?: folderPaths.firstOrNull().orEmpty()
                 val discFolders = folderPaths.filter { path ->
                     val name = path.substringAfterLast('/').substringAfterLast('\\')
                     MultiDiscDetector.isDiscFolder(name)
@@ -125,38 +138,54 @@ class LibraryRepository(
                     discFolders.size
                 )
 
-                Album(
-                    title = first.album,
-                    artist = first.albumArtist ?: first.artist,
-                    trackCount = primaryTracks.size,
-                    totalDurationMs = primaryTracks.sumOf { it.durationMs },
-                    discCount = distinctDiscCount,
-                    discFolders = discFolders,
-                    folderPaths = folderPaths,
-                    year = primaryTracks.firstNotNullOfOrNull { it.year }
+                AlbumWithPrimaryRelPath(
+                    album = Album(
+                        title = first.album,
+                        artist = first.albumArtist ?: first.artist,
+                        trackCount = primaryTracks.size,
+                        totalDurationMs = primaryTracks.sumOf { it.durationMs },
+                        discCount = distinctDiscCount,
+                        discFolders = discFolders,
+                        folderPaths = folderPaths,
+                        year = primaryTracks.firstNotNullOfOrNull { it.year },
+                        artworkUri = primaryTracks.firstNotNullOfOrNull { it.artworkUri }
+                    ),
+                    earliestRelPath = earliestRelPath
                 )
             }
 
             when (sortOption) {
-                AlbumSortOption.ALPHABETICAL -> albums.sortedBy { it.title.lowercase(Locale.US) }
-                AlbumSortOption.ARTIST -> albums.sortedWith(
-                    compareBy<Album> { it.artist.lowercase(Locale.US) }
-                        .thenBy { it.title.lowercase(Locale.US) }
-                )
+                AlbumSortOption.ALPHABETICAL -> albumsWithPaths
+                    .sortedBy { it.album.title.lowercase(Locale.US) }
+                    .map { it.album }
+                AlbumSortOption.ARTIST -> albumsWithPaths
+                    .sortedWith(
+                        compareBy<AlbumWithPrimaryRelPath> { it.album.artist.lowercase(Locale.US) }
+                            .thenBy { it.album.title.lowercase(Locale.US) }
+                    )
+                    .map { it.album }
+                AlbumSortOption.DIRECTORY -> albumsWithPaths
+                    .sortedWith { a, b ->
+                        val cmp = MusicalRootScanner.HierarchicalPathComparator.compare(a.earliestRelPath, b.earliestRelPath)
+                        if (cmp != 0) cmp else a.album.title.lowercase(Locale.US).compareTo(b.album.title.lowercase(Locale.US))
+                    }
+                    .map { it.album }
             }
         }
     }
 
     /**
-     * Streams Artists sorted Alphabetically (Specification #3 & #4).
+     * Streams Artists sorted Alphabetically or by Directory (Specification #3 & #4).
      * Aggregates all folderPaths spanned by the artist for 1-2 tap cross-navigation.
      */
-    fun getArtistsFlow(): Flow<List<Artist>> {
+    fun getArtistsFlow(sortOption: ArtistSortOption = ArtistSortOption.ALPHABETICAL): Flow<List<Artist>> {
         return trackDao.getAllTracksByArtist().map { entities ->
             val rawTracks = entities.map { it.toDomainModel() }
             val groupedByArtist = rawTracks.groupBy { it.artist.trim().lowercase(Locale.US) }
 
-            groupedByArtist.values.mapNotNull { artistRawTracks ->
+            data class ArtistWithPrimaryRelPath(val artist: Artist, val earliestRelPath: String)
+
+            val artistsWithPaths = groupedByArtist.values.mapNotNull { artistRawTracks ->
                 if (artistRawTracks.isEmpty()) return@mapNotNull null
                 val deduped = FormatDeduplicator.deduplicateTracks(artistRawTracks)
                 val first = deduped.first().primaryTrack
@@ -166,15 +195,35 @@ class LibraryRepository(
                 val folderPaths = artistRawTracks.map { it.parentFolderPath }
                     .filter { it.isNotBlank() }
                     .distinct()
-                    .sorted()
+                    .sortedWith(MusicalRootScanner.HierarchicalPathComparator)
+                val earliestRelPath = artistRawTracks
+                    .map { it.relativePath.ifBlank { it.filePath } }
+                    .minWithOrNull(MusicalRootScanner.HierarchicalPathComparator)
+                    ?: folderPaths.firstOrNull().orEmpty()
 
-                Artist(
-                    name = first.artist,
-                    albumCount = albumCount,
-                    trackCount = deduped.size,
-                    folderPaths = folderPaths
+                ArtistWithPrimaryRelPath(
+                    artist = Artist(
+                        name = first.artist,
+                        albumCount = albumCount,
+                        trackCount = deduped.size,
+                        folderPaths = folderPaths,
+                        artworkUri = deduped.firstNotNullOfOrNull { it.primaryTrack.artworkUri }
+                    ),
+                    earliestRelPath = earliestRelPath
                 )
-            }.sortedBy { it.name.lowercase(Locale.US) }
+            }
+
+            when (sortOption) {
+                ArtistSortOption.ALPHABETICAL -> artistsWithPaths
+                    .sortedBy { it.artist.name.lowercase(Locale.US) }
+                    .map { it.artist }
+                ArtistSortOption.DIRECTORY -> artistsWithPaths
+                    .sortedWith { a, b ->
+                        val cmp = MusicalRootScanner.HierarchicalPathComparator.compare(a.earliestRelPath, b.earliestRelPath)
+                        if (cmp != 0) cmp else a.artist.name.lowercase(Locale.US).compareTo(b.artist.name.lowercase(Locale.US))
+                    }
+                    .map { it.artist }
+            }
         }
     }
 

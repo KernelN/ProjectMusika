@@ -7,5 +7,6 @@ data class Artist(
     val name: String,
     val albumCount: Int,
     val trackCount: Int,
-    val folderPaths: List<String> = emptyList()
+    val folderPaths: List<String> = emptyList(),
+    val artworkUri: String? = null
 )

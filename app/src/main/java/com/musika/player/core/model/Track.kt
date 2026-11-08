@@ -7,18 +7,21 @@ import kotlinx.serialization.Serializable
 enum class SongSortOption {
     ALPHABETICAL,
     ALBUM,
-    ARTIST
+    ARTIST,
+    DIRECTORY
 }
 
 @Serializable
 enum class AlbumSortOption {
     ALPHABETICAL,
-    ARTIST
+    ARTIST,
+    DIRECTORY
 }
 
 @Serializable
 enum class ArtistSortOption {
-    ALPHABETICAL
+    ALPHABETICAL,
+    DIRECTORY
 }
 
 @Serializable
@@ -41,6 +44,7 @@ data class Track(
     val year: Int? = null,
     val genre: String? = null,
     val parentFolderPath: String = "",
+    val artworkUri: String? = null,
     val webMatchPending: Boolean = false,
     val alternateVariantsCount: Int = 0 // Used for UI format badge e.g. "FLAC +1"
 ) {

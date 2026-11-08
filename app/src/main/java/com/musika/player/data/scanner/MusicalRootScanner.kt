@@ -41,6 +41,7 @@ object MusicalRootScanner {
         }
 
         val rootAbsolutePath = normalizePath(musicalRootFolder.absolutePath)
+        AudioMetadataParser.clearFolderArtworkMemoCache()
         val visitedCanonicalPaths = mutableSetOf<String>()
         val discoveredTracks = mutableListOf<TrackEntity>()
         val directTrackCounts = LinkedHashMap<String, Int>()
@@ -105,6 +106,7 @@ object MusicalRootScanner {
                             dateAdded = entry.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
                             year = parsed.year,
                             genre = parsed.genre,
+                            artworkUri = parsed.artworkUri,
                             normalizedKey = normKey,
                             webMatchPending = trackFilePath in existingPendingWebPaths
                         )
@@ -230,5 +232,20 @@ object MusicalRootScanner {
         } else {
             normTarget
         }
+    }
+
+    /**
+     * Compares two paths hierarchically from the topmost folder segment down to the leaf file/folder name
+     * (case-insensitively, with deterministic tie-breaker).
+     */
+    val HierarchicalPathComparator: Comparator<String> = Comparator { pathA, pathB ->
+        val segsA = normalizePath(pathA).trimStart('/').split('/').filter { it.isNotEmpty() }
+        val segsB = normalizePath(pathB).trimStart('/').split('/').filter { it.isNotEmpty() }
+        val minSize = minOf(segsA.size, segsB.size)
+        for (i in 0 until minSize) {
+            val cmp = segsA[i].lowercase(Locale.US).compareTo(segsB[i].lowercase(Locale.US))
+            if (cmp != 0) return@Comparator cmp
+        }
+        segsA.size.compareTo(segsB.size)
     }
 }

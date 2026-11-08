@@ -17,7 +17,7 @@ import com.musika.player.data.local.entity.WebMetadataEntity
         FolderEntity::class,
         WebMetadataEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class MusikaDatabase : RoomDatabase() {
