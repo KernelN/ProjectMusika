@@ -1,9 +1,77 @@
+# Antigravity & Agent workspace artifacts
 .antigravity_artifacts/
-.gradle/
+Test-ground/
+
+# Built application files
+*.apk
+*.aab
+*.ap_
+
+# Files for the ART/Dalvik VM
+*.dex
+
+# Java class files
+*.class
+
+# Generated files
+bin/
+gen/
+out/
 build/
 app/build/
-local.properties
+
+# Gradle files
+.gradle/
+buildOutputCleanup/
+
+# Android Studio and IntelliJ IDEA
 *.iml
 .idea/
-.DS_Store
+.idea/libraries
+.idea/caches
+.idea/shelf
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/gradle.xml
+.idea/assetWizardSettings.xml
+.idea/dictionaries
+.idea/compiler.xml
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Log files
+*.log
+
+# Android Studio Navigation editor temp files
+.navigation/
+
+# Android Profiler
+captures/
+
+# Google Services (Firebase)
+# google-services.json
+
+# Native / NDK build
+.cxx/
+.externalNativeBuild/
+
+# Keystores & Signing credentials
+*.jks
+*.keystore
 app/*.jks
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows thumbnail cache and desktop.ini
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Kotlin & Backup files
+.kotlin/
+*.swp
+*~
