@@ -19,13 +19,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.QueueMusic
 import androidx.compose.material.icons.filled.Repeat
 import androidx.compose.material.icons.filled.RepeatOne
 import androidx.compose.material.icons.filled.Shuffle
@@ -166,7 +166,7 @@ fun WinampMiniPlayerBar(
                 IconButton(onClick = onOpenQueue) {
                     Box {
                         Icon(
-                            imageVector = Icons.Default.QueueMusic,
+                            imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                             contentDescription = "Instant Queue Access",
                             tint = if (state.priorityQueue.isNotEmpty()) WinampAmberGold else Color.White
                         )
@@ -249,7 +249,7 @@ fun NowPlayingScreenOverlay(
                 )
                 IconButton(onClick = onOpenQueue) {
                     Icon(
-                        imageVector = Icons.Default.QueueMusic,
+                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
                         contentDescription = "Open Dual Queue",
                         tint = WinampAmberGold
                     )
