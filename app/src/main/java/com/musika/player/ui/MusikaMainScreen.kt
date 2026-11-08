@@ -3,6 +3,7 @@ package com.musika.player.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -70,12 +72,14 @@ import androidx.compose.ui.unit.sp
 import com.musika.player.core.model.Album
 import com.musika.player.core.model.AlbumSortOption
 import com.musika.player.core.model.Artist
+import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
 import com.musika.player.data.local.entity.WebMetadataEntity
+import com.musika.player.ui.components.ArtworkThumbnail
 import com.musika.player.ui.components.DualQueueBottomSheet
 import com.musika.player.ui.components.FastAlphabetScrollbar
 import com.musika.player.ui.components.FormatVariantPickerDialog
@@ -112,6 +116,7 @@ fun MusikaMainScreen(
     val webMetadataMap by viewModel.webMetadataMap.collectAsState()
     val songSort by viewModel.songSortOption.collectAsState()
     val albumSort by viewModel.albumSortOption.collectAsState()
+    val artistSort by viewModel.artistSortOption.collectAsState()
     val folderSort by viewModel.folderSortOption.collectAsState()
     val multiFolderSheetState by viewModel.multiFolderSheetState.collectAsState()
     val variantPickerGroup by viewModel.variantPickerGroup.collectAsState()
@@ -312,7 +317,9 @@ fun MusikaMainScreen(
                         artists = artists,
                         selectedArtistName = selectedArtistDetail,
                         selectedArtistTracks = selectedArtistTracks,
+                        sortOption = artistSort,
                         webMetadataMap = webMetadataMap,
+                        onSortChanged = viewModel::setArtistSort,
                         onSelectArtist = viewModel::jumpToArtist,
                         onCloseArtistDetail = viewModel::closeArtistDetail,
                         onPlayArtistTrack = { group, artistName ->
@@ -457,6 +464,7 @@ private fun SongsTabPage(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -546,6 +554,14 @@ private fun AlbumsTabPage(
                 IconButton(onClick = onCloseAlbumDetail) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Albums")
                 }
+                ArtworkThumbnail(
+                    artworkUri = activeAlbum.artworkUri,
+                    fallbackIcon = Icons.Default.Album,
+                    fallbackTint = SamsungBlue,
+                    size = 44.dp,
+                    cornerRadius = 8.dp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = activeAlbum.title,
@@ -640,6 +656,7 @@ private fun AlbumsTabPage(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -669,11 +686,12 @@ private fun AlbumsTabPage(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Album,
-                            contentDescription = null,
-                            tint = SamsungBlue,
-                            modifier = Modifier.size(36.dp)
+                        ArtworkThumbnail(
+                            artworkUri = album.artworkUri,
+                            fallbackIcon = Icons.Default.Album,
+                            fallbackTint = SamsungBlue,
+                            size = 42.dp,
+                            cornerRadius = 8.dp
                         )
                         Column(
                             modifier = Modifier
@@ -717,7 +735,9 @@ private fun ArtistsTabPage(
     artists: List<Artist>,
     selectedArtistName: String?,
     selectedArtistTracks: List<DeduplicatedTrackGroup>,
+    sortOption: ArtistSortOption,
     webMetadataMap: Map<String, WebMetadataEntity>,
+    onSortChanged: (ArtistSortOption) -> Unit,
     onSelectArtist: (String) -> Unit,
     onCloseArtistDetail: () -> Unit,
     onPlayArtistTrack: (DeduplicatedTrackGroup, String) -> Unit,
@@ -742,6 +762,14 @@ private fun ArtistsTabPage(
                 IconButton(onClick = onCloseArtistDetail) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back to Artists")
                 }
+                ArtworkThumbnail(
+                    artworkUri = activeArtist.artworkUri,
+                    fallbackIcon = Icons.Default.Person,
+                    fallbackTint = SamsungBlue,
+                    size = 44.dp,
+                    cornerRadius = 8.dp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = activeArtist.name,
@@ -797,56 +825,77 @@ private fun ArtistsTabPage(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(end = 22.dp)
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            items(artists, key = { it.name }) { artist ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onSelectArtist(artist.name) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Person,
-                        contentDescription = null,
-                        tint = SamsungBlue,
-                        modifier = Modifier.size(36.dp)
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 12.dp)
-                    ) {
-                        Text(
-                            text = artist.name,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Text(
-                            text = "${artist.albumCount} albums • ${artist.trackCount} songs",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    IconButton(onClick = { onJumpToArtistFolders(artist) }) {
-                        Icon(Icons.Default.Folder, contentDescription = "Go to Artist Folder(s)")
-                    }
-                }
-                HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
+            Text("Sort:", style = MaterialTheme.typography.labelMedium)
+            ArtistSortOption.entries.forEach { opt ->
+                FilterChip(
+                    selected = sortOption == opt,
+                    onClick = { onSortChanged(opt) },
+                    label = { Text(opt.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                )
             }
         }
 
-        FastAlphabetScrollbar(
-            items = artists.map { it.name },
-            onLetterSelected = { idx -> scope.launch { listState.scrollToItem(idx) } },
-            modifier = Modifier.align(Alignment.CenterEnd)
-        )
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(end = 22.dp)
+            ) {
+                items(artists, key = { it.name }) { artist ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelectArtist(artist.name) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ArtworkThumbnail(
+                            artworkUri = artist.artworkUri,
+                            fallbackIcon = Icons.Default.Person,
+                            fallbackTint = SamsungBlue,
+                            size = 42.dp,
+                            cornerRadius = 8.dp
+                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 12.dp)
+                        ) {
+                            Text(
+                                text = artist.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = "${artist.albumCount} albums • ${artist.trackCount} songs",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = { onJumpToArtistFolders(artist) }) {
+                            Icon(Icons.Default.Folder, contentDescription = "Go to Artist Folder(s)")
+                        }
+                    }
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
+                }
+            }
+
+            FastAlphabetScrollbar(
+                items = artists.map { it.name },
+                onLetterSelected = { idx -> scope.launch { listState.scrollToItem(idx) } },
+                modifier = Modifier.align(Alignment.CenterEnd)
+            )
+        }
     }
 }
 
@@ -1041,11 +1090,12 @@ private fun DeduplicatedTrackRow(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.MusicNote,
-            contentDescription = null,
-            tint = SamsungBlue,
-            modifier = Modifier.size(28.dp)
+        ArtworkThumbnail(
+            artworkUri = track.artworkUri,
+            fallbackIcon = Icons.Default.MusicNote,
+            fallbackTint = SamsungBlue,
+            size = 40.dp,
+            cornerRadius = 8.dp
         )
 
         Column(
@@ -1215,11 +1265,12 @@ private fun RawDirectoryTrackRow(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.MusicNote,
-            contentDescription = null,
-            tint = WinampLedGreen,
-            modifier = Modifier.size(26.dp)
+        ArtworkThumbnail(
+            artworkUri = track.artworkUri,
+            fallbackIcon = Icons.Default.MusicNote,
+            fallbackTint = WinampLedGreen,
+            size = 38.dp,
+            cornerRadius = 8.dp
         )
         Column(
             modifier = Modifier

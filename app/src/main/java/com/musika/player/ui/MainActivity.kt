@@ -16,6 +16,7 @@ import androidx.core.content.ContextCompat
 import com.musika.player.MusikaApplication
 import com.musika.player.data.repository.LibraryRepository
 import com.musika.player.data.repository.SettingsPreferences
+import com.musika.player.player.MusikaPlaybackService
 import com.musika.player.ui.theme.MusikaTheme
 
 /**
@@ -48,6 +49,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Attach DualQueueEngine to the real ExoPlayer / MediaSessionService bridge
+        MusikaPlaybackService.attachEngineToExoPlayer(applicationContext, viewModel.dualQueueEngine)
 
         // Request MANAGE_EXTERNAL_STORAGE (with fallback to READ_MEDIA_AUDIO) once at setup
         if (!settingsPreferences.hasRequestedInitialPermissions.value) {

@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.musika.player.core.model.Album
 import com.musika.player.core.model.AlbumSortOption
 import com.musika.player.core.model.Artist
+import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
@@ -113,6 +114,7 @@ class MusikaViewModel(
     val hasRequestedInitialPermissions: StateFlow<Boolean> = settings.hasRequestedInitialPermissions
     val songSortOption: StateFlow<SongSortOption> = settings.songSortOption
     val albumSortOption: StateFlow<AlbumSortOption> = settings.albumSortOption
+    val artistSortOption: StateFlow<ArtistSortOption> = settings.artistSortOption
     val folderSortOption: StateFlow<FolderSortOption> = settings.folderSortOption
 
     val deduplicatedSongs: StateFlow<List<DeduplicatedTrackGroup>> = settings.songSortOption
@@ -123,7 +125,8 @@ class MusikaViewModel(
         .flatMapLatest { sort -> repository.getAlbumsFlow(sort) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val artists: StateFlow<List<Artist>> = repository.getArtistsFlow()
+    val artists: StateFlow<List<Artist>> = settings.artistSortOption
+        .flatMapLatest { sort -> repository.getArtistsFlow(sort) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val currentSubfolders: StateFlow<List<FolderNode>> = combine(
@@ -168,6 +171,7 @@ class MusikaViewModel(
 
     fun setSongSort(option: SongSortOption) = settings.setSongSortOption(option)
     fun setAlbumSort(option: AlbumSortOption) = settings.setAlbumSortOption(option)
+    fun setArtistSort(option: ArtistSortOption) = settings.setArtistSortOption(option)
     fun setFolderSort(option: FolderSortOption) = settings.setFolderSortOption(option)
 
     fun setMusicalRootFolder(newRootPath: String) {

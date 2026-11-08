@@ -23,6 +23,7 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
@@ -44,12 +45,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.musika.player.core.model.AudioQuality
 import com.musika.player.core.model.LoopMode
 import com.musika.player.core.model.RandomMode
@@ -60,6 +65,44 @@ import com.musika.player.ui.theme.WinampAmberGold
 import com.musika.player.ui.theme.WinampDarkBezel
 import com.musika.player.ui.theme.WinampLedGreen
 import java.util.Locale
+
+/**
+ * Renders extracted Track/Album/Artist artwork (embedded ID3 APIC/PIC, FLAC PICTURE, M4A covr,
+ * or folder cover image) with a styled Samsung/Winamp fallback icon.
+ */
+@Composable
+fun ArtworkThumbnail(
+    artworkUri: String?,
+    modifier: Modifier = Modifier,
+    fallbackIcon: ImageVector = Icons.Default.MusicNote,
+    fallbackTint: Color = SamsungBlue,
+    size: Dp = 42.dp,
+    cornerRadius: Dp = 8.dp
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(RoundedCornerShape(cornerRadius))
+            .background(WinampDarkBezel)
+            .border(1.dp, fallbackTint.copy(alpha = 0.35f), RoundedCornerShape(cornerRadius)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = fallbackIcon,
+            contentDescription = null,
+            tint = fallbackTint,
+            modifier = Modifier.size(size * 0.55f)
+        )
+        if (!artworkUri.isNullOrBlank()) {
+            AsyncImage(
+                model = artworkUri,
+                contentDescription = "Cover Artwork",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+    }
+}
 
 /**
  * Live Winamp Classic Telemetry Bar (Specification #1):
@@ -134,6 +177,14 @@ fun WinampMiniPlayerBar(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                ArtworkThumbnail(
+                    artworkUri = track.artworkUri,
+                    fallbackIcon = Icons.Default.MusicNote,
+                    fallbackTint = SamsungBlue,
+                    size = 42.dp,
+                    cornerRadius = 8.dp
+                )
+                Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = track.title,
@@ -264,7 +315,18 @@ fun NowPlayingScreenOverlay(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // Prominent Cover Artwork (Embedded APIC/FLAC/Folder.jpg or styled fallback)
+            ArtworkThumbnail(
+                artworkUri = track.artworkUri,
+                fallbackIcon = Icons.Default.Album,
+                fallbackTint = SamsungBlue,
+                size = 180.dp,
+                cornerRadius = 16.dp
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             // Track Title, Artist, Album
             Text(

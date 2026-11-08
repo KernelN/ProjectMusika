@@ -39,6 +39,15 @@ class DualQueueEngine(
     private val onModesChanged: ((RandomMode, LoopMode) -> Unit)? = null
 ) {
 
+    interface PlaybackDriver {
+        fun onLoadAndPlayTrack(track: Track, startPositionMs: Long = 0L, playWhenReady: Boolean = true)
+        fun onPlayStateChanged(isPlaying: Boolean)
+        fun onSeekTo(positionMs: Long)
+    }
+
+    @Volatile
+    var playbackDriver: PlaybackDriver? = null
+
     data class EngineState(
         val currentTrack: Track? = null,
         val isPlaying: Boolean = false,
@@ -97,6 +106,7 @@ class DualQueueEngine(
             shufflePool = pool,
             activeContextName = contextName
         )
+        playbackDriver?.onLoadAndPlayTrack(selectedTrack, 0L, true)
     }
 
     /**
@@ -127,6 +137,7 @@ class DualQueueEngine(
             shufflePool = ordered,
             activeContextName = "$albumOrFolderName (All Discs)"
         )
+        playbackDriver?.onLoadAndPlayTrack(firstTrack, 0L, true)
     }
 
     /**
@@ -144,6 +155,7 @@ class DualQueueEngine(
                 standardQueue = listOf(track),
                 shufflePool = listOf(track)
             )
+            playbackDriver?.onLoadAndPlayTrack(track, 0L, true)
             return
         }
         _state.value = current.copy(
@@ -165,6 +177,7 @@ class DualQueueEngine(
                 standardQueue = listOf(track),
                 shufflePool = listOf(track)
             )
+            playbackDriver?.onLoadAndPlayTrack(track, 0L, true)
             return
         }
         _state.value = current.copy(
@@ -223,6 +236,8 @@ class DualQueueEngine(
         // 1. FILE_LOOP repeats the single playing file when auto-triggered (or if it's the only track)
         if (current.loopMode == LoopMode.FILE_LOOP && autoTriggered) {
             _state.value = current.copy(positionMs = 0L, isPlaying = true)
+            playbackDriver?.onSeekTo(0L)
+            playbackDriver?.onPlayStateChanged(true)
             return activeTrack
         }
 
@@ -237,11 +252,13 @@ class DualQueueEngine(
                 positionMs = 0L,
                 isPlaying = true
             )
+            playbackDriver?.onLoadAndPlayTrack(nextImmediate, 0L, true)
             return nextImmediate
         }
 
         if (current.standardQueue.isEmpty()) {
             _state.value = current.copy(isPlaying = false, positionMs = 0L)
+            playbackDriver?.onPlayStateChanged(false)
             return null
         }
 
@@ -255,6 +272,7 @@ class DualQueueEngine(
                 positionMs = 0L,
                 isPlaying = true
             )
+            playbackDriver?.onLoadAndPlayTrack(nextRandomTrack, 0L, true)
             return nextRandomTrack
         }
 
@@ -275,6 +293,7 @@ class DualQueueEngine(
                     positionMs = 0L,
                     isPlaying = true
                 )
+                playbackDriver?.onLoadAndPlayTrack(nextTrack, 0L, true)
                 nextTrack
             } else if (current.loopMode == LoopMode.QUEUE_LOOP || current.loopMode == LoopMode.FILE_LOOP) {
                 val reshuffled = current.standardQueue.shuffled(randomGenerator)
@@ -286,10 +305,12 @@ class DualQueueEngine(
                     positionMs = 0L,
                     isPlaying = true
                 )
+                playbackDriver?.onLoadAndPlayTrack(nextTrack, 0L, true)
                 nextTrack
             } else {
                 // NO_LOOP at end of shuffle pool -> stop
                 _state.value = current.copy(isPlaying = false, positionMs = 0L)
+                playbackDriver?.onPlayStateChanged(false)
                 null
             }
         }
@@ -305,6 +326,7 @@ class DualQueueEngine(
                 positionMs = 0L,
                 isPlaying = true
             )
+            playbackDriver?.onLoadAndPlayTrack(nextTrack, 0L, true)
             nextTrack
         } else if (current.loopMode == LoopMode.QUEUE_LOOP || current.loopMode == LoopMode.FILE_LOOP) {
             val firstTrack = current.standardQueue.first()
@@ -314,9 +336,11 @@ class DualQueueEngine(
                 positionMs = 0L,
                 isPlaying = true
             )
+            playbackDriver?.onLoadAndPlayTrack(firstTrack, 0L, true)
             firstTrack
         } else {
             _state.value = current.copy(isPlaying = false, positionMs = 0L)
+            playbackDriver?.onPlayStateChanged(false)
             null
         }
     }
@@ -325,6 +349,7 @@ class DualQueueEngine(
         val current = _state.value
         if (current.positionMs > 3000L) {
             _state.value = current.copy(positionMs = 0L)
+            playbackDriver?.onSeekTo(0L)
             return current.currentTrack
         }
         if (playHistory.isNotEmpty()) {
@@ -334,6 +359,7 @@ class DualQueueEngine(
                 positionMs = 0L,
                 isPlaying = true
             )
+            playbackDriver?.onLoadAndPlayTrack(prev, 0L, true)
             return prev
         }
         val activeTrack = current.currentTrack ?: return null
@@ -345,27 +371,55 @@ class DualQueueEngine(
                 positionMs = 0L,
                 isPlaying = true
             )
+            playbackDriver?.onLoadAndPlayTrack(prev, 0L, true)
             return prev
         }
         _state.value = current.copy(positionMs = 0L)
+        playbackDriver?.onSeekTo(0L)
         return activeTrack
     }
 
     fun setPlaying(playing: Boolean) {
         _state.value = _state.value.copy(isPlaying = playing)
+        playbackDriver?.onPlayStateChanged(playing)
     }
 
     fun togglePlayPause() {
         val current = _state.value
         if (current.currentTrack != null) {
-            _state.value = current.copy(isPlaying = !current.isPlaying)
+            val nextPlaying = !current.isPlaying
+            _state.value = current.copy(isPlaying = nextPlaying)
+            playbackDriver?.onPlayStateChanged(nextPlaying)
         }
     }
 
     fun seekTo(positionMs: Long) {
         val current = _state.value
-        val maxDur = current.currentTrack?.durationMs ?: Long.MAX_VALUE
-        _state.value = current.copy(positionMs = positionMs.coerceIn(0L, maxDur.coerceAtLeast(0L)))
+        val maxDur = current.currentTrack?.durationMs?.takeIf { it > 0L } ?: Long.MAX_VALUE
+        val clamped = positionMs.coerceIn(0L, maxDur.coerceAtLeast(0L))
+        _state.value = current.copy(positionMs = clamped)
+        playbackDriver?.onSeekTo(clamped)
+    }
+
+    /**
+     * Called by the active media player ticker to update live playback position and decoded track duration
+     * without re-triggering a user seek command.
+     */
+    fun updateProgressFromPlayer(positionMs: Long, actualDurationMs: Long = 0L) {
+        val current = _state.value
+        val active = current.currentTrack ?: return
+        val updatedTrack = if (actualDurationMs > 0L && actualDurationMs != active.durationMs) {
+            active.copy(durationMs = actualDurationMs)
+        } else {
+            active
+        }
+        val clampedPos = positionMs.coerceAtLeast(0L)
+        if (current.positionMs != clampedPos || updatedTrack !== active) {
+            _state.value = current.copy(
+                currentTrack = updatedTrack,
+                positionMs = clampedPos
+            )
+        }
     }
 
     fun removeFromPriorityQueue(index: Int) {
@@ -435,6 +489,9 @@ class DualQueueEngine(
                     standardQueue = matchedStandard,
                     activeContextName = snap.activeContextName
                 )
+                if (matchedCurrent != null) {
+                    playbackDriver?.onLoadAndPlayTrack(matchedCurrent, snap.positionMs, snap.isPlaying)
+                }
             }
         }
     }
