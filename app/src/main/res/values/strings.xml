@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">Musika</string>
+    <string name="tab_songs">Songs</string>
+    <string name="tab_albums">Albums</string>
+    <string name="tab_artists">Artists</string>
+    <string name="tab_folders">Folders</string>
+    <string name="sort_alphabetical">Alphabetical</string>
+    <string name="sort_album">Album</string>
+    <string name="sort_artist">Artist</string>
+    <string name="sort_system_default">System Default</string>
+    <string name="sort_most_files">Most Music Files</string>
+    <string name="web_match_unsaved">Web Match — Unsaved</string>
+    <string name="play_next">Play Next</string>
+    <string name="add_to_queue">Add to End</string>
+    <string name="play_all_discs">Play All Discs</string>
+</resources>
