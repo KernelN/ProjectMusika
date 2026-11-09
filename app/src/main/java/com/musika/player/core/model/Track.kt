@@ -25,6 +25,14 @@ enum class ArtistSortOption {
 }
 
 @Serializable
+enum class NowPlayingArtworkStyle(val displayName: String) {
+    ROUNDED_SQUARE("Classic Rounded Square"),
+    SPINNING_DISC("Spinning Vinyl / CD Disc"),
+    FULL_SCREEN_BACKGROUND("Full-Screen Background (Spotify Style)"),
+    WINAMP_RETRO_BEZEL("Retro Winamp Bezel Frame")
+}
+
+@Serializable
 data class Track(
     val id: Long = 0L,
     val filePath: String,

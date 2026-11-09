@@ -3,7 +3,6 @@ package com.musika.player.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,18 +18,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.UnfoldLess
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -38,6 +34,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,19 +52,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import android.os.Environment
 import com.musika.player.core.model.DeduplicatedTrackGroup
+import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.Track
 import com.musika.player.data.metadata.MetadataWriteDialogState
 import com.musika.player.data.metadata.WriteConfirmationStep
-import com.musika.player.data.scanner.AudioMetadataParser
 import com.musika.player.player.DualQueueEngine
 import com.musika.player.ui.MultiFolderSheetState
 import com.musika.player.ui.theme.SamsungBlue
 import com.musika.player.ui.theme.WinampAmberGold
 import com.musika.player.ui.theme.WinampLedGreen
-import java.io.File
-import java.util.Locale
 
 /**
  * Multi-Folder Disambiguation Bottom Sheet (Specification #4):
@@ -96,7 +90,9 @@ fun MultiFolderBottomSheet(
                     Text(
                         text = "Folders for ${sheetState.sourceTitle}",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = if (sheetState.showExpandedPaths) "Expanded Full Path View" else "Compact View (Default)",
@@ -109,7 +105,11 @@ fun MultiFolderBottomSheet(
                         imageVector = if (sheetState.showExpandedPaths) Icons.Default.UnfoldLess else Icons.Default.UnfoldMore,
                         contentDescription = "Toggle Expanded Path View"
                     )
-                    Text(if (sheetState.showExpandedPaths) "Compact" else "Expand Paths")
+                    Text(
+                        text = if (sheetState.showExpandedPaths) "Compact" else "Expand",
+                        maxLines = 1,
+                        softWrap = false
+                    )
                 }
             }
 
@@ -143,7 +143,9 @@ fun MultiFolderBottomSheet(
                             Text(
                                 text = folderName.ifEmpty { folderPath },
                                 style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             if (sheetState.showExpandedPaths) {
                                 Text(
@@ -322,12 +324,14 @@ fun MetadataWriteConfirmationDialog(
         confirmButton = {
             Button(onClick = onConfirmStep) {
                 Text(
-                    when (state.currentStep) {
+                    text = when (state.currentStep) {
                         WriteConfirmationStep.STEP_1_REVIEW_DIFF -> "Approve Diff (Next)"
-                        WriteConfirmationStep.STEP_2_FIRST_ARE_YOU_SURE -> "Yes, I'm Sure (Step 2/3)"
-                        WriteConfirmationStep.STEP_3_FINAL_ARE_YOU_SURE -> "Write to Local Files Now"
+                        WriteConfirmationStep.STEP_2_FIRST_ARE_YOU_SURE -> "Yes, I'm Sure (2/3)"
+                        WriteConfirmationStep.STEP_3_FINAL_ARE_YOU_SURE -> "Write to Files Now"
                         WriteConfirmationStep.COMPLETED_READY_TO_WRITE -> "Done"
-                    }
+                    },
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         },
@@ -338,11 +342,11 @@ fun MetadataWriteConfirmationDialog(
                         onClick = onStepBack,
                         modifier = Modifier.padding(end = 6.dp)
                     ) {
-                        Text("Back")
+                        Text("Back", maxLines = 1, softWrap = false)
                     }
                 }
                 TextButton(onClick = onDismiss) {
-                    Text("Cancel")
+                    Text("Cancel", maxLines = 1, softWrap = false)
                 }
             }
         }
@@ -391,11 +395,12 @@ fun DualQueueBottomSheet(
                 Text(
                     text = "Priority Queue — Play Next (FIFO: ${state.priorityQueue.size})",
                     style = MaterialTheme.typography.labelLarge,
-                    color = WinampAmberGold
+                    color = WinampAmberGold,
+                    modifier = Modifier.weight(1f)
                 )
                 if (state.priorityQueue.isNotEmpty()) {
                     TextButton(onClick = onClearPriorityQueue) {
-                        Text("Clear Priority")
+                        Text("Clear", maxLines = 1, softWrap = false)
                     }
                 }
             }
@@ -430,7 +435,9 @@ fun DualQueueBottomSheet(
                                 )
                                 Text(
                                     text = "${track.artist} • ${track.audioQuality.format}",
-                                    style = MaterialTheme.typography.labelSmall
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
                                 )
                             }
                             IconButton(onClick = { onRemovePriorityIndex(idx) }) {
@@ -491,298 +498,104 @@ fun DualQueueBottomSheet(
 }
 
 /**
- * Dual-Mode Scoped Musical Root Folder Finder & Scanner Settings Dialog (Specification #2):
- * - Mode 1: Direct manual path input box
- * - Mode 2: Interactive in-app Storage Navigator & Folder Searcher (storage volume shortcuts,
- *   parent ".." navigation, live subfolder search/filter bar, direct audio file count preview,
- *   and "Select Current Folder" action).
- * - "Always scan entire phone for music" is OFF by default.
+ * Settings Dialog with:
+ * 1. Phone Native Folder Picker (ACTION_OPEN_DOCUMENT_TREE) + collapsible manual path backup
+ * 2. Track Artwork Display Customization (4 Now Playing styles + list thumbnail toggle)
+ * 3. "Always scan entire phone for music" toggle (OFF by default)
  */
 @Composable
 fun SettingsDialog(
     currentRootPath: String,
     alwaysScanEntirePhone: Boolean,
+    artworkStyle: NowPlayingArtworkStyle,
+    showListTrackThumbnails: Boolean,
+    onLaunchNativeFolderPicker: () -> Unit,
     onSaveRootPath: (String) -> Unit,
     onToggleAlwaysScanEntirePhone: (Boolean) -> Unit,
+    onSelectArtworkStyle: (NowPlayingArtworkStyle) -> Unit,
+    onToggleListTrackThumbnails: (Boolean) -> Unit,
     onRequestStoragePermissions: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var editedPath by remember(currentRootPath) { mutableStateOf(currentRootPath) }
-    var browserPath by remember(currentRootPath) {
-        val initialFile = File(currentRootPath)
-        val validStart = when {
-            initialFile.exists() && initialFile.isDirectory -> initialFile.absolutePath
-            initialFile.parentFile?.exists() == true -> initialFile.parentFile!!.absolutePath
-            else -> try {
-                Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
-            } catch (_: Exception) {
-                "/"
-            }
-        }
-        mutableStateOf(validStart)
-    }
-    var folderSearchQuery by remember { mutableStateOf("") }
-
-    val browsedDir = remember(browserPath) { File(browserPath) }
-    val childDirectories = remember(browserPath, folderSearchQuery) {
-        val list = try {
-            browsedDir.listFiles()?.filter { it.isDirectory && !it.name.startsWith(".") } ?: emptyList()
-        } catch (_: Exception) {
-            emptyList()
-        }
-        val filtered = if (folderSearchQuery.isBlank()) {
-            list
-        } else {
-            val q = folderSearchQuery.trim().lowercase(Locale.US)
-            list.filter { it.name.lowercase(Locale.US).contains(q) }
-        }
-        filtered.sortedBy { it.name.lowercase(Locale.US) }
-    }
-
-    val directAudioFilesInCurrentDir = remember(browserPath) {
-        try {
-            browsedDir.listFiles()?.count { AudioMetadataParser.isSupportedAudioFile(it) } ?: 0
-        } catch (_: Exception) {
-            0
-        }
-    }
-
-    val storageShortcuts = remember {
-        buildList {
-            val extRoot = try {
-                Environment.getExternalStorageDirectory()?.absolutePath
-            } catch (_: Exception) {
-                null
-            } ?: "/storage/emulated/0"
-            add("Internal Storage" to extRoot)
-            add("Music" to "$extRoot/Music")
-            add("Download" to "$extRoot/Download")
-            val storageParent = File("/storage")
-            val volumes = try {
-                storageParent.listFiles()?.filter {
-                    it.isDirectory && it.name != "emulated" && it.name != "self"
-                } ?: emptyList()
-            } catch (_: Exception) {
-                emptyList()
-            }
-            volumes.forEach { vol ->
-                add("SD (${vol.name})" to vol.absolutePath)
-            }
-        }
-    }
+    var showManualPathField by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text("Musical Root Folder & Storage Finder")
+            Text(
+                text = "Musika Settings",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                // 1. Direct Path Input
-                OutlinedTextField(
-                    value = editedPath,
-                    onValueChange = {
-                        editedPath = it
-                        val candidate = File(it)
-                        if (candidate.exists() && candidate.isDirectory) {
-                            browserPath = candidate.absolutePath
-                        }
-                    },
-                    label = { Text("Musical Root Folder Path (Manual Input)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                // 1. Native Root Music Folder Selector
+                Text(
+                    text = "Musical Root Folder",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = SamsungBlue,
+                    fontWeight = FontWeight.Bold
                 )
-
-                // 2. Storage Volume Quick Shortcuts
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    storageShortcuts.forEach { (label, path) ->
-                        AssistChip(
-                            onClick = {
-                                browserPath = path
-                                editedPath = path
-                                folderSearchQuery = ""
-                            },
-                            label = { Text(label, fontSize = 11.sp) }
-                        )
-                    }
-                }
-
-                // 3. Interactive Storage Navigator & Folder Searcher
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .border(1.dp, SamsungBlue.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                        .padding(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+                        .padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        IconButton(
-                            onClick = {
-                                val parent = File(browserPath).parentFile
-                                if (parent != null) {
-                                    browserPath = parent.absolutePath
-                                    folderSearchQuery = ""
-                                }
-                            },
-                            modifier = Modifier.size(28.dp)
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Parent Folder")
-                        }
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 6.dp)
-                        ) {
-                            Text(
-                                text = browsedDir.name.ifEmpty { browserPath },
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                text = "$browserPath ($directAudioFilesInCurrentDir audio files here)",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = WinampLedGreen,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                        TextButton(
-                            onClick = { editedPath = browserPath }
-                        ) {
-                            Icon(
-                                Icons.Default.Check,
-                                contentDescription = null,
-                                tint = WinampAmberGold,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Select Here", color = WinampAmberGold, fontSize = 11.sp)
-                        }
-                    }
-
-                    OutlinedTextField(
-                        value = folderSearchQuery,
-                        onValueChange = { folderSearchQuery = it },
-                        placeholder = { Text("Search subfolders in current directory...", fontSize = 12.sp) },
-                        leadingIcon = {
-                            Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+                    Text(
+                        text = editedPath,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = WinampLedGreen
                     )
-
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 120.dp, max = 180.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    Button(
+                        onClick = onLaunchNativeFolderPicker,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        if (browsedDir.parentFile != null) {
-                            item(key = "..parent") {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(MaterialTheme.colorScheme.surface)
-                                        .clickable {
-                                            browsedDir.parentFile?.let {
-                                                browserPath = it.absolutePath
-                                                folderSearchQuery = ""
-                                            }
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Folder,
-                                        contentDescription = null,
-                                        tint = WinampAmberGold,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Text(
-                                        text = ".. (Go up to parent directory)",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.padding(start = 8.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        if (childDirectories.isEmpty()) {
-                            item(key = "empty_dirs") {
-                                Text(
-                                    text = if (folderSearchQuery.isBlank()) {
-                                        "No subfolders inside this directory. Tap 'Select Here' or 'Save & Rescan' to use this folder."
-                                    } else {
-                                        "No subfolders matching '$folderSearchQuery'."
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(8.dp)
-                                )
-                            }
-                        } else {
-                            items(childDirectories, key = { it.absolutePath }) { subDir ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(MaterialTheme.colorScheme.surface)
-                                        .clickable {
-                                            browserPath = subDir.absolutePath
-                                            editedPath = subDir.absolutePath
-                                            folderSearchQuery = ""
-                                        }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Folder,
-                                            contentDescription = null,
-                                            tint = SamsungBlue,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Text(
-                                            text = subDir.name,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Medium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            modifier = Modifier.padding(start = 8.dp)
-                                        )
-                                    }
-                                    Text(
-                                        text = "Open",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = SamsungBlue
-                                    )
-                                }
-                            }
-                        }
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Choose Folder (Phone Native Picker)",
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    TextButton(
+                        onClick = { showManualPathField = !showManualPathField },
+                        modifier = Modifier.align(Alignment.End)
+                    ) {
+                        Text(
+                            text = if (showManualPathField) "Hide Manual Path Input" else "Edit Path Manually (Advanced)",
+                            fontSize = 11.sp
+                        )
+                    }
+                    if (showManualPathField) {
+                        OutlinedTextField(
+                            value = editedPath,
+                            onValueChange = { editedPath = it },
+                            label = { Text("Folder Path") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 }
 
-                // 4. Always Scan Entire Phone Toggle (OFF by default)
+                // 2. Full-Phone Scan Toggle (OFF by default)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -791,11 +604,11 @@ fun SettingsDialog(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = "Always scan entire phone for music",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold
                         )
                         Text(
-                            text = "OFF by default (scoped strictly to Musical Root Folder)",
+                            text = "OFF by default (scans strictly from Root Folder)",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -806,11 +619,65 @@ fun SettingsDialog(
                     )
                 }
 
+                HorizontalDivider()
+
+                // 3. Track Image / Artwork Customization
+                Text(
+                    text = "Track Artwork & Display Style",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = WinampAmberGold,
+                    fontWeight = FontWeight.Bold
+                )
+                NowPlayingArtworkStyle.entries.forEach { style ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable { onSelectArtworkStyle(style) }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(
+                            selected = artworkStyle == style,
+                            onClick = { onSelectArtworkStyle(style) }
+                        )
+                        Text(
+                            text = style.displayName,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(start = 6.dp)
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Show track cover thumbnails in lists",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = showListTrackThumbnails,
+                        onCheckedChange = onToggleListTrackThumbnails
+                    )
+                }
+
+                HorizontalDivider()
+
                 OutlinedButton(
                     onClick = onRequestStoragePermissions,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Grant All-Files / Audio Storage Permission", fontSize = 12.sp)
+                    Text(
+                        text = "Grant Storage & Notification Permissions",
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             }
         },
@@ -821,12 +688,12 @@ fun SettingsDialog(
                     onDismiss()
                 }
             ) {
-                Text("Save & Rescan")
+                Text("Save & Rescan", maxLines = 1, softWrap = false)
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("Close", maxLines = 1, softWrap = false)
             }
         }
     )

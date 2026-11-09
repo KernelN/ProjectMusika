@@ -11,6 +11,7 @@ import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
 import com.musika.player.core.model.LoopMode
+import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
@@ -116,6 +117,8 @@ class MusikaViewModel(
     val albumSortOption: StateFlow<AlbumSortOption> = settings.albumSortOption
     val artistSortOption: StateFlow<ArtistSortOption> = settings.artistSortOption
     val folderSortOption: StateFlow<FolderSortOption> = settings.folderSortOption
+    val artworkStyle: StateFlow<NowPlayingArtworkStyle> = settings.artworkStyle
+    val showListTrackThumbnails: StateFlow<Boolean> = settings.showListTrackThumbnails
 
     val deduplicatedSongs: StateFlow<List<DeduplicatedTrackGroup>> = settings.songSortOption
         .flatMapLatest { sort -> repository.getDeduplicatedSongsFlow(sort) }
@@ -173,6 +176,8 @@ class MusikaViewModel(
     fun setAlbumSort(option: AlbumSortOption) = settings.setAlbumSortOption(option)
     fun setArtistSort(option: ArtistSortOption) = settings.setArtistSortOption(option)
     fun setFolderSort(option: FolderSortOption) = settings.setFolderSortOption(option)
+    fun setArtworkStyle(style: NowPlayingArtworkStyle) = settings.setArtworkStyle(style)
+    fun setShowListTrackThumbnails(enabled: Boolean) = settings.setShowListTrackThumbnails(enabled)
 
     fun setMusicalRootFolder(newRootPath: String) {
         settings.setMusicalRootPath(newRootPath)
@@ -271,6 +276,12 @@ class MusikaViewModel(
         viewModelScope.launch {
             _currentFolderNode.value = repository.getFolderNode(norm)
         }
+    }
+
+    fun canNavigateUpFolder(): Boolean {
+        val current = MusicalRootScanner.normalizePath(_currentFolderPath.value)
+        val root = MusicalRootScanner.normalizePath(settings.resolveEffectiveScanRoot().absolutePath)
+        return !current.equals(root, ignoreCase = true) && File(current).parentFile != null
     }
 
     fun navigateUpFolder(): Boolean {

@@ -1,5 +1,7 @@
 package com.musika.player.ui
 
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,11 +13,13 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
@@ -50,12 +55,12 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -64,6 +69,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -76,9 +82,11 @@ import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
+import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
 import com.musika.player.data.local.entity.WebMetadataEntity
+import com.musika.player.data.scanner.MusicalRootScanner
 import com.musika.player.ui.components.ArtworkThumbnail
 import com.musika.player.ui.components.DualQueueBottomSheet
 import com.musika.player.ui.components.FastAlphabetScrollbar
@@ -92,14 +100,18 @@ import com.musika.player.ui.components.formatLoopLabel
 import com.musika.player.ui.components.formatRandomLabel
 import com.musika.player.ui.theme.SamsungBlue
 import com.musika.player.ui.theme.WinampAmberGold
+import com.musika.player.ui.theme.WinampDarkBezel
 import com.musika.player.ui.theme.WinampLedGreen
 import kotlinx.coroutines.launch
 
 @Composable
 fun MusikaMainScreen(
     viewModel: MusikaViewModel,
-    onRequestStoragePermissions: () -> Unit
+    onRequestStoragePermissions: () -> Unit,
+    onLaunchNativeFolderPicker: () -> Unit = {},
+    onExitApp: () -> Unit = {}
 ) {
+    val context = LocalContext.current
     val selectedTab by viewModel.selectedTab.collectAsState()
     val playbackState by viewModel.playbackState.collectAsState()
     val deduplicatedSongs by viewModel.deduplicatedSongs.collectAsState()
@@ -118,6 +130,8 @@ fun MusikaMainScreen(
     val albumSort by viewModel.albumSortOption.collectAsState()
     val artistSort by viewModel.artistSortOption.collectAsState()
     val folderSort by viewModel.folderSortOption.collectAsState()
+    val artworkStyle by viewModel.artworkStyle.collectAsState()
+    val showListTrackThumbnails by viewModel.showListTrackThumbnails.collectAsState()
     val multiFolderSheetState by viewModel.multiFolderSheetState.collectAsState()
     val variantPickerGroup by viewModel.variantPickerGroup.collectAsState()
     val writeConfirmationState by viewModel.writeConfirmationDialogState.collectAsState()
@@ -134,58 +148,143 @@ fun MusikaMainScreen(
         initialPage = selectedTab.ordinal,
         pageCount = { tabs.size }
     )
-    val coroutineScope = rememberCoroutineScope()
 
+    // Eliminate intermediate-page race condition when switching to opposite tabs (e.g. Songs <-> Folders):
+    // 1. Programmatic tab selection jumps directly with scrollToPage (never passes through intermediate pages).
     LaunchedEffect(selectedTab) {
         if (pagerState.currentPage != selectedTab.ordinal) {
-            pagerState.animateScrollToPage(selectedTab.ordinal)
+            pagerState.scrollToPage(selectedTab.ordinal)
         }
     }
 
-    LaunchedEffect(pagerState.currentPage) {
-        val targetTab = tabs[pagerState.currentPage]
-        if (selectedTab != targetTab) {
-            viewModel.selectTab(targetTab)
+    // 2. User swipe gesture updates selectedTab ONLY after the pager settles and is no longer scrolling.
+    LaunchedEffect(pagerState.settledPage, pagerState.isScrollInProgress) {
+        if (!pagerState.isScrollInProgress) {
+            val settledTab = tabs[pagerState.settledPage]
+            if (selectedTab != settledTab) {
+                viewModel.selectTab(settledTab)
+            }
         }
     }
+
+    // Step-by-Step Back Navigation Hierarchy + Double-Back within 2s on Root Section to Exit
+    var lastRootBackPressMs by remember { mutableLongStateOf(0L) }
+    BackHandler(enabled = true) {
+        when {
+            showNowPlayingOverlay -> viewModel.setShowNowPlayingOverlay(false)
+            showQueueSheet -> viewModel.setShowQueueSheet(false)
+            multiFolderSheetState != null -> viewModel.dismissMultiFolderSheet()
+            variantPickerGroup != null -> viewModel.dismissFormatVariantPicker()
+            writeConfirmationState != null -> viewModel.dismissWriteConfirmation()
+            showSettingsDialog -> viewModel.setShowSettingsDialog(false)
+            selectedTab == MusikaTab.ALBUMS && selectedAlbumDetail != null -> viewModel.closeAlbumDetail()
+            selectedTab == MusikaTab.ARTISTS && selectedArtistDetail != null -> viewModel.closeArtistDetail()
+            selectedTab == MusikaTab.FOLDERS && viewModel.canNavigateUpFolder() -> viewModel.navigateUpFolder()
+            selectedTab != MusikaTab.SONGS -> viewModel.selectTab(MusikaTab.SONGS)
+            else -> {
+                val now = System.currentTimeMillis()
+                if (now - lastRootBackPressMs < 2000L) {
+                    onExitApp()
+                } else {
+                    lastRootBackPressMs = now
+                    Toast.makeText(context, "Press back again to exit Musika", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    val activePlayingPath = playbackState.currentTrack?.filePath
 
     Box(modifier = Modifier.fillMaxSize()) {
         Scaffold(
+            contentWindowInsets = WindowInsets.systemBars,
             topBar = {
-                Column {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     TopAppBar(
                         title = {
-                            Column {
-                                Text(
-                                    text = "MUSIKA",
-                                    fontWeight = FontWeight.ExtraBold,
-                                    letterSpacing = 1.2.sp
-                                )
-                                Text(
-                                    text = "${formatRandomLabel(playbackState.randomMode)} • ${formatLoopLabel(playbackState.loopMode)}",
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    color = WinampLedGreen
-                                )
-                            }
+                            Text(
+                                text = "MUSIKA",
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 1.2.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         },
                         actions = {
-                            TextButton(onClick = { viewModel.cycleRandomMode() }) {
+                            // Dedicated 1-tap "Playing" access pill in the top bar whenever a song is loaded
+                            if (playbackState.currentTrack != null) {
+                                Surface(
+                                    color = SamsungBlue.copy(alpha = 0.22f),
+                                    shape = RoundedCornerShape(16.dp),
+                                    modifier = Modifier
+                                        .padding(end = 4.dp)
+                                        .border(1.dp, SamsungBlue, RoundedCornerShape(16.dp))
+                                        .clickable { viewModel.setShowNowPlayingOverlay(true) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Equalizer,
+                                            contentDescription = "Open Now Playing",
+                                            tint = WinampLedGreen,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Text(
+                                            text = "Playing",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color.White,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Compact non-wrapping Random & Loop mode pills
+                            Surface(
+                                color = WinampDarkBezel,
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .border(1.dp, WinampAmberGold.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                                    .clickable { viewModel.cycleRandomMode() }
+                            ) {
                                 Text(
                                     text = formatRandomLabel(playbackState.randomMode),
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    color = WinampAmberGold
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = WinampAmberGold,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                                 )
                             }
-                            TextButton(onClick = { viewModel.cycleLoopMode() }) {
+
+                            Surface(
+                                color = WinampDarkBezel,
+                                shape = RoundedCornerShape(6.dp),
+                                modifier = Modifier
+                                    .border(1.dp, WinampLedGreen.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                                    .clickable { viewModel.cycleLoopMode() }
+                            ) {
                                 Text(
                                     text = formatLoopLabel(playbackState.loopMode),
                                     fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    color = WinampLedGreen
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = WinampLedGreen,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp)
                                 )
                             }
+
                             IconButton(onClick = { viewModel.triggerLibraryScan() }) {
                                 Icon(Icons.Default.Refresh, contentDescription = "Rescan Root Folder")
                             }
@@ -213,29 +312,35 @@ fun MusikaMainScreen(
                                 text = msg,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = Color.White,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 text = "Dismiss",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = WinampAmberGold
+                                color = WinampAmberGold,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
 
-                    // Samsung Music Top Swipeable Tabs
-                    TabRow(selectedTabIndex = pagerState.currentPage) {
+                    // Samsung Music Top Swipeable Tabs (no competing animateScrollToPage coroutine)
+                    TabRow(selectedTabIndex = selectedTab.ordinal) {
                         tabs.forEachIndexed { idx, tab ->
+                            val isSelected = selectedTab.ordinal == idx
                             Tab(
-                                selected = pagerState.currentPage == idx,
-                                onClick = {
-                                    viewModel.selectTab(tab)
-                                    coroutineScope.launch { pagerState.animateScrollToPage(idx) }
-                                },
+                                selected = isSelected,
+                                onClick = { viewModel.selectTab(tab) },
                                 text = {
                                     Text(
                                         text = tab.title,
-                                        fontWeight = if (pagerState.currentPage == idx) FontWeight.Bold else FontWeight.Normal
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             )
@@ -246,8 +351,10 @@ fun MusikaMainScreen(
             bottomBar = {
                 WinampMiniPlayerBar(
                     state = playbackState,
+                    artworkStyle = artworkStyle,
                     onExpandNowPlaying = { viewModel.setShowNowPlayingOverlay(true) },
                     onTogglePlayPause = { viewModel.togglePlayPause() },
+                    onSkipPrevious = { viewModel.skipPrevious() },
                     onSkipNext = { viewModel.skipNext() },
                     onOpenQueue = { viewModel.setShowQueueSheet(true) }
                 )
@@ -263,11 +370,15 @@ fun MusikaMainScreen(
                     MusikaTab.SONGS -> SongsTabPage(
                         groups = deduplicatedSongs,
                         sortOption = songSort,
+                        activePlayingPath = activePlayingPath,
+                        showListThumbnails = showListTrackThumbnails,
+                        artworkStyle = artworkStyle,
                         webMetadataMap = webMetadataMap,
                         onSortChanged = viewModel::setSongSort,
                         onPlayGroup = { group ->
                             viewModel.playSongGroup(group, deduplicatedSongs, "All Songs")
                         },
+                        onOpenNowPlaying = { viewModel.setShowNowPlayingOverlay(true) },
                         onOpenVariantPicker = viewModel::openFormatVariantPicker,
                         onPlayNext = viewModel::enqueuePlayNext,
                         onAddAtEnd = viewModel::enqueueAddAtEnd,
@@ -285,6 +396,10 @@ fun MusikaMainScreen(
                         selectedAlbumTitle = selectedAlbumDetail,
                         selectedAlbumTracks = selectedAlbumTracks,
                         sortOption = albumSort,
+                        musicalRootPath = musicalRootPath,
+                        activePlayingPath = activePlayingPath,
+                        showListThumbnails = showListTrackThumbnails,
+                        artworkStyle = artworkStyle,
                         webMetadataMap = webMetadataMap,
                         onSortChanged = viewModel::setAlbumSort,
                         onSelectAlbum = viewModel::jumpToAlbum,
@@ -292,6 +407,7 @@ fun MusikaMainScreen(
                         onPlayAlbumTrack = { group, albumTitle ->
                             viewModel.playSongGroup(group, selectedAlbumTracks, "Album: $albumTitle")
                         },
+                        onOpenNowPlaying = { viewModel.setShowNowPlayingOverlay(true) },
                         onPlayAllDiscs = viewModel::playAllDiscsForAlbum,
                         onJumpToSiblingDiscFolder = viewModel::openSingleFolderInDirectoryView,
                         onJumpToArtist = viewModel::jumpToArtist,
@@ -318,6 +434,10 @@ fun MusikaMainScreen(
                         selectedArtistName = selectedArtistDetail,
                         selectedArtistTracks = selectedArtistTracks,
                         sortOption = artistSort,
+                        musicalRootPath = musicalRootPath,
+                        activePlayingPath = activePlayingPath,
+                        showListThumbnails = showListTrackThumbnails,
+                        artworkStyle = artworkStyle,
                         webMetadataMap = webMetadataMap,
                         onSortChanged = viewModel::setArtistSort,
                         onSelectArtist = viewModel::jumpToArtist,
@@ -325,6 +445,7 @@ fun MusikaMainScreen(
                         onPlayArtistTrack = { group, artistName ->
                             viewModel.playSongGroup(group, selectedArtistTracks, "Artist: $artistName")
                         },
+                        onOpenNowPlaying = { viewModel.setShowNowPlayingOverlay(true) },
                         onJumpToAlbum = viewModel::jumpToAlbum,
                         onJumpToArtistFolders = { artist ->
                             viewModel.jumpToFolders(artist.folderPaths, artist.name)
@@ -342,6 +463,9 @@ fun MusikaMainScreen(
                         subfolders = currentSubfolders,
                         rawTracks = currentFolderRawTracks,
                         sortOption = folderSort,
+                        activePlayingPath = activePlayingPath,
+                        showListThumbnails = showListTrackThumbnails,
+                        artworkStyle = artworkStyle,
                         webMetadataMap = webMetadataMap,
                         onSortChanged = viewModel::setFolderSort,
                         onNavigateUp = { viewModel.navigateUpFolder() },
@@ -356,6 +480,7 @@ fun MusikaMainScreen(
                                 ?: currentFolderPath.substringAfterLast('/')
                             viewModel.playRawTrackInFolder(track, currentFolderRawTracks, name)
                         },
+                        onOpenNowPlaying = { viewModel.setShowNowPlayingOverlay(true) },
                         onPlayNext = viewModel::enqueuePlayNext,
                         onAddAtEnd = viewModel::enqueueAddAtEnd,
                         onJumpToAlbum = viewModel::jumpToAlbum,
@@ -370,6 +495,7 @@ fun MusikaMainScreen(
         if (showNowPlayingOverlay) {
             NowPlayingScreenOverlay(
                 state = playbackState,
+                artworkStyle = artworkStyle,
                 onDismiss = { viewModel.setShowNowPlayingOverlay(false) },
                 onTogglePlayPause = viewModel::togglePlayPause,
                 onSkipPrevious = { viewModel.skipPrevious() },
@@ -432,8 +558,13 @@ fun MusikaMainScreen(
             SettingsDialog(
                 currentRootPath = musicalRootPath,
                 alwaysScanEntirePhone = alwaysScanEntirePhone,
+                artworkStyle = artworkStyle,
+                showListTrackThumbnails = showListTrackThumbnails,
+                onLaunchNativeFolderPicker = onLaunchNativeFolderPicker,
                 onSaveRootPath = viewModel::setMusicalRootFolder,
                 onToggleAlwaysScanEntirePhone = viewModel::setAlwaysScanEntirePhone,
+                onSelectArtworkStyle = viewModel::setArtworkStyle,
+                onToggleListTrackThumbnails = viewModel::setShowListTrackThumbnails,
                 onRequestStoragePermissions = onRequestStoragePermissions,
                 onDismiss = { viewModel.setShowSettingsDialog(false) }
             )
@@ -445,9 +576,13 @@ fun MusikaMainScreen(
 private fun SongsTabPage(
     groups: List<DeduplicatedTrackGroup>,
     sortOption: SongSortOption,
+    activePlayingPath: String?,
+    showListThumbnails: Boolean,
+    artworkStyle: NowPlayingArtworkStyle,
     webMetadataMap: Map<String, WebMetadataEntity>,
     onSortChanged: (SongSortOption) -> Unit,
     onPlayGroup: (DeduplicatedTrackGroup) -> Unit,
+    onOpenNowPlaying: () -> Unit,
     onOpenVariantPicker: (DeduplicatedTrackGroup) -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddAtEnd: (Track) -> Unit,
@@ -460,6 +595,24 @@ private fun SongsTabPage(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    // Sort-aware keys for the FastAlphabetScrollbar:
+    // Uses the exact field active for sorting (Title, Album, Artist, or Topmost Directory Name)!
+    val sortKeys = remember(groups, sortOption) {
+        groups.map { group ->
+            val t = group.primaryTrack
+            when (sortOption) {
+                SongSortOption.ALPHABETICAL -> t.title
+                SongSortOption.ALBUM -> t.album
+                SongSortOption.ARTIST -> t.artist
+                SongSortOption.DIRECTORY -> t.relativePath
+                    .trimStart('/', '\\')
+                    .substringBefore('/')
+                    .substringBefore('\\')
+                    .ifBlank { t.fileName }
+            }
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -469,12 +622,18 @@ private fun SongsTabPage(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Sort:", style = MaterialTheme.typography.labelMedium)
+            Text("Sort:", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
             SongSortOption.entries.forEach { opt ->
                 FilterChip(
                     selected = sortOption == opt,
                     onClick = { onSortChanged(opt) },
-                    label = { Text(opt.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                    label = {
+                        Text(
+                            text = opt.name.lowercase().replaceFirstChar { it.uppercase() },
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 )
             }
         }
@@ -484,15 +643,20 @@ private fun SongsTabPage(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(end = 22.dp)
+                    .padding(end = 36.dp)
             ) {
                 items(groups, key = { it.normalizedKey }) { group ->
                     val primary = group.primaryTrack
                     val webMeta = webMetadataMap[primary.filePath]
+                    val isPlayingThis = group.allVariants.any { it.filePath == activePlayingPath }
                     DeduplicatedTrackRow(
                         group = group,
+                        isCurrentlyPlaying = isPlayingThis,
+                        showThumbnail = showListThumbnails,
+                        asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC,
                         webMetadata = webMeta,
                         onPlay = { onPlayGroup(group) },
+                        onOpenNowPlaying = onOpenNowPlaying,
                         onBadgeClick = { onOpenVariantPicker(group) },
                         onPlayNext = { onPlayNext(primary) },
                         onAddAtEnd = { onAddAtEnd(primary) },
@@ -507,7 +671,8 @@ private fun SongsTabPage(
             }
 
             FastAlphabetScrollbar(
-                items = groups.map { it.primaryTrack.title },
+                items = sortKeys,
+                listState = listState,
                 onLetterSelected = { idx ->
                     scope.launch { listState.scrollToItem(idx) }
                 },
@@ -524,11 +689,16 @@ private fun AlbumsTabPage(
     selectedAlbumTitle: String?,
     selectedAlbumTracks: List<DeduplicatedTrackGroup>,
     sortOption: AlbumSortOption,
+    musicalRootPath: String,
+    activePlayingPath: String?,
+    showListThumbnails: Boolean,
+    artworkStyle: NowPlayingArtworkStyle,
     webMetadataMap: Map<String, WebMetadataEntity>,
     onSortChanged: (AlbumSortOption) -> Unit,
     onSelectAlbum: (String) -> Unit,
     onCloseAlbumDetail: () -> Unit,
     onPlayAlbumTrack: (DeduplicatedTrackGroup, String) -> Unit,
+    onOpenNowPlaying: () -> Unit,
     onPlayAllDiscs: (String) -> Unit,
     onJumpToSiblingDiscFolder: (String) -> Unit,
     onJumpToArtist: (String) -> Unit,
@@ -559,25 +729,30 @@ private fun AlbumsTabPage(
                     fallbackIcon = Icons.Default.Album,
                     fallbackTint = SamsungBlue,
                     size = 44.dp,
-                    cornerRadius = 8.dp
+                    cornerRadius = 8.dp,
+                    asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = activeAlbum.title,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "${activeAlbum.artist} • ${activeAlbum.trackCount} songs" +
                                 if (activeAlbum.isMultiDisc) " • ${activeAlbum.discCount} Discs" else "",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
 
-            // Cross-Navigation + Multi-Disc + Web Metadata Actions
+            // Cross-Navigation + Multi-Disc + Web Metadata Actions (single-line chips)
             FlowRow(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -586,16 +761,18 @@ private fun AlbumsTabPage(
             ) {
                 AssistChip(
                     onClick = { onJumpToArtist(activeAlbum.artist) },
-                    label = { Text("Go to Artist") },
+                    label = { Text("Artist", maxLines = 1, softWrap = false) },
                     leadingIcon = { Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
                 AssistChip(
                     onClick = { onJumpToAlbumFolders(activeAlbum) },
                     label = {
                         Text(
-                            if (activeAlbum.folderPaths.size > 1)
-                                "Go to Folders (${activeAlbum.folderPaths.size})"
-                            else "Go to Folder"
+                            text = if (activeAlbum.folderPaths.size > 1)
+                                "Folders (${activeAlbum.folderPaths.size})"
+                            else "Folder",
+                            maxLines = 1,
+                            softWrap = false
                         )
                     },
                     leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) }
@@ -603,25 +780,25 @@ private fun AlbumsTabPage(
                 if (activeAlbum.isMultiDisc) {
                     AssistChip(
                         onClick = { onPlayAllDiscs(activeAlbum.title) },
-                        label = { Text("Play All Discs (${activeAlbum.discCount})") },
+                        label = { Text("Play All Discs (${activeAlbum.discCount})", maxLines = 1, softWrap = false) },
                         leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                     activeAlbum.discFolders.forEach { discFolderPath ->
                         val discName = discFolderPath.substringAfterLast('/').substringAfterLast('\\')
                         AssistChip(
                             onClick = { onJumpToSiblingDiscFolder(discFolderPath) },
-                            label = { Text("Jump: $discName") }
+                            label = { Text("Disc: $discName", maxLines = 1, softWrap = false) }
                         )
                     }
                 }
                 AssistChip(
                     onClick = { onFetchAlbumWebMetadata(activeAlbum.title) },
-                    label = { Text("Web Match Album") },
+                    label = { Text("Web Match", maxLines = 1, softWrap = false) },
                     leadingIcon = { Icon(Icons.Default.CloudDownload, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
                 AssistChip(
                     onClick = { onWriteAlbumMetadata(activeAlbum.title) },
-                    label = { Text("Save Web Tags") },
+                    label = { Text("Save Tags", maxLines = 1, softWrap = false) },
                     leadingIcon = { Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
             }
@@ -629,10 +806,15 @@ private fun AlbumsTabPage(
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(selectedAlbumTracks, key = { it.normalizedKey }) { group ->
                     val primary = group.primaryTrack
+                    val isPlayingThis = group.allVariants.any { it.filePath == activePlayingPath }
                     DeduplicatedTrackRow(
                         group = group,
+                        isCurrentlyPlaying = isPlayingThis,
+                        showThumbnail = showListThumbnails,
+                        asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC,
                         webMetadata = webMetadataMap[primary.filePath],
                         onPlay = { onPlayAlbumTrack(group, activeAlbum.title) },
+                        onOpenNowPlaying = onOpenNowPlaying,
                         onBadgeClick = { onOpenVariantPicker(group) },
                         onPlayNext = { onPlayNext(primary) },
                         onAddAtEnd = { onAddAtEnd(primary) },
@@ -652,6 +834,23 @@ private fun AlbumsTabPage(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    val sortKeys = remember(albums, sortOption, musicalRootPath) {
+        albums.map { album ->
+            when (sortOption) {
+                AlbumSortOption.ALPHABETICAL -> album.title
+                AlbumSortOption.ARTIST -> album.artist
+                AlbumSortOption.DIRECTORY -> {
+                    val firstFolder = album.folderPaths.firstOrNull().orEmpty()
+                    MusicalRootScanner.computeRelativePath(musicalRootPath, firstFolder)
+                        .trimStart('/', '\\')
+                        .substringBefore('/')
+                        .substringBefore('\\')
+                        .ifBlank { album.title }
+                }
+            }
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -661,12 +860,18 @@ private fun AlbumsTabPage(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Sort:", style = MaterialTheme.typography.labelMedium)
+            Text("Sort:", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
             AlbumSortOption.entries.forEach { opt ->
                 FilterChip(
                     selected = sortOption == opt,
                     onClick = { onSortChanged(opt) },
-                    label = { Text(opt.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                    label = {
+                        Text(
+                            text = opt.name.lowercase().replaceFirstChar { it.uppercase() },
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 )
             }
         }
@@ -676,7 +881,7 @@ private fun AlbumsTabPage(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(end = 22.dp)
+                    .padding(end = 36.dp)
             ) {
                 items(albums, key = { "${it.title}|${it.artist}" }) { album ->
                     Row(
@@ -686,13 +891,16 @@ private fun AlbumsTabPage(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        ArtworkThumbnail(
-                            artworkUri = album.artworkUri,
-                            fallbackIcon = Icons.Default.Album,
-                            fallbackTint = SamsungBlue,
-                            size = 42.dp,
-                            cornerRadius = 8.dp
-                        )
+                        if (showListThumbnails) {
+                            ArtworkThumbnail(
+                                artworkUri = album.artworkUri,
+                                fallbackIcon = Icons.Default.Album,
+                                fallbackTint = SamsungBlue,
+                                size = 42.dp,
+                                cornerRadius = 8.dp,
+                                asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC
+                            )
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -701,13 +909,17 @@ private fun AlbumsTabPage(
                             Text(
                                 text = album.title,
                                 style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = "${album.artist} • ${album.trackCount} tracks" +
                                         if (album.isMultiDisc) " • Multi-Disc (${album.discCount})" else "",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         IconButton(onClick = { onJumpToArtist(album.artist) }) {
@@ -722,7 +934,8 @@ private fun AlbumsTabPage(
             }
 
             FastAlphabetScrollbar(
-                items = albums.map { it.title },
+                items = sortKeys,
+                listState = listState,
                 onLetterSelected = { idx -> scope.launch { listState.scrollToItem(idx) } },
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
@@ -736,11 +949,16 @@ private fun ArtistsTabPage(
     selectedArtistName: String?,
     selectedArtistTracks: List<DeduplicatedTrackGroup>,
     sortOption: ArtistSortOption,
+    musicalRootPath: String,
+    activePlayingPath: String?,
+    showListThumbnails: Boolean,
+    artworkStyle: NowPlayingArtworkStyle,
     webMetadataMap: Map<String, WebMetadataEntity>,
     onSortChanged: (ArtistSortOption) -> Unit,
     onSelectArtist: (String) -> Unit,
     onCloseArtistDetail: () -> Unit,
     onPlayArtistTrack: (DeduplicatedTrackGroup, String) -> Unit,
+    onOpenNowPlaying: () -> Unit,
     onJumpToAlbum: (String) -> Unit,
     onJumpToArtistFolders: (Artist) -> Unit,
     onOpenVariantPicker: (DeduplicatedTrackGroup) -> Unit,
@@ -767,28 +985,35 @@ private fun ArtistsTabPage(
                     fallbackIcon = Icons.Default.Person,
                     fallbackTint = SamsungBlue,
                     size = 44.dp,
-                    cornerRadius = 8.dp
+                    cornerRadius = 8.dp,
+                    asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = activeArtist.name,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                     Text(
                         text = "${activeArtist.albumCount} albums • ${activeArtist.trackCount} songs",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
                 AssistChip(
                     onClick = { onJumpToArtistFolders(activeArtist) },
                     label = {
                         Text(
-                            if (activeArtist.folderPaths.size > 1)
+                            text = if (activeArtist.folderPaths.size > 1)
                                 "Folders (${activeArtist.folderPaths.size})"
-                            else "Go to Folder"
+                            else "Folder",
+                            maxLines = 1,
+                            softWrap = false
                         )
                     },
                     leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) }
@@ -798,10 +1023,15 @@ private fun ArtistsTabPage(
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(selectedArtistTracks, key = { it.normalizedKey }) { group ->
                     val primary = group.primaryTrack
+                    val isPlayingThis = group.allVariants.any { it.filePath == activePlayingPath }
                     DeduplicatedTrackRow(
                         group = group,
+                        isCurrentlyPlaying = isPlayingThis,
+                        showThumbnail = showListThumbnails,
+                        asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC,
                         webMetadata = webMetadataMap[primary.filePath],
                         onPlay = { onPlayArtistTrack(group, activeArtist.name) },
+                        onOpenNowPlaying = onOpenNowPlaying,
                         onBadgeClick = { onOpenVariantPicker(group) },
                         onPlayNext = { onPlayNext(primary) },
                         onAddAtEnd = { onAddAtEnd(primary) },
@@ -825,6 +1055,22 @@ private fun ArtistsTabPage(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
+    val sortKeys = remember(artists, sortOption, musicalRootPath) {
+        artists.map { artist ->
+            when (sortOption) {
+                ArtistSortOption.ALPHABETICAL -> artist.name
+                ArtistSortOption.DIRECTORY -> {
+                    val firstFolder = artist.folderPaths.firstOrNull().orEmpty()
+                    MusicalRootScanner.computeRelativePath(musicalRootPath, firstFolder)
+                        .trimStart('/', '\\')
+                        .substringBefore('/')
+                        .substringBefore('\\')
+                        .ifBlank { artist.name }
+                }
+            }
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         Row(
             modifier = Modifier
@@ -834,12 +1080,18 @@ private fun ArtistsTabPage(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Sort:", style = MaterialTheme.typography.labelMedium)
+            Text("Sort:", style = MaterialTheme.typography.labelMedium, maxLines = 1, softWrap = false)
             ArtistSortOption.entries.forEach { opt ->
                 FilterChip(
                     selected = sortOption == opt,
                     onClick = { onSortChanged(opt) },
-                    label = { Text(opt.name.lowercase().replaceFirstChar { it.uppercase() }) }
+                    label = {
+                        Text(
+                            text = opt.name.lowercase().replaceFirstChar { it.uppercase() },
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 )
             }
         }
@@ -849,7 +1101,7 @@ private fun ArtistsTabPage(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(end = 22.dp)
+                    .padding(end = 36.dp)
             ) {
                 items(artists, key = { it.name }) { artist ->
                     Row(
@@ -859,13 +1111,16 @@ private fun ArtistsTabPage(
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        ArtworkThumbnail(
-                            artworkUri = artist.artworkUri,
-                            fallbackIcon = Icons.Default.Person,
-                            fallbackTint = SamsungBlue,
-                            size = 42.dp,
-                            cornerRadius = 8.dp
-                        )
+                        if (showListThumbnails) {
+                            ArtworkThumbnail(
+                                artworkUri = artist.artworkUri,
+                                fallbackIcon = Icons.Default.Person,
+                                fallbackTint = SamsungBlue,
+                                size = 42.dp,
+                                cornerRadius = 8.dp,
+                                asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC
+                            )
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -874,12 +1129,16 @@ private fun ArtistsTabPage(
                             Text(
                                 text = artist.name,
                                 style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 text = "${artist.albumCount} albums • ${artist.trackCount} songs",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                         IconButton(onClick = { onJumpToArtistFolders(artist) }) {
@@ -891,7 +1150,8 @@ private fun ArtistsTabPage(
             }
 
             FastAlphabetScrollbar(
-                items = artists.map { it.name },
+                items = sortKeys,
+                listState = listState,
                 onLetterSelected = { idx -> scope.launch { listState.scrollToItem(idx) } },
                 modifier = Modifier.align(Alignment.CenterEnd)
             )
@@ -914,12 +1174,16 @@ private fun FoldersDirectoryTabPage(
     subfolders: List<FolderNode>,
     rawTracks: List<Track>,
     sortOption: FolderSortOption,
+    activePlayingPath: String?,
+    showListThumbnails: Boolean,
+    artworkStyle: NowPlayingArtworkStyle,
     webMetadataMap: Map<String, WebMetadataEntity>,
     onSortChanged: (FolderSortOption) -> Unit,
     onNavigateUp: () -> Unit,
     onOpenSubfolder: (String) -> Unit,
     onPlayAllDiscsInFolder: () -> Unit,
     onPlayRawTrack: (Track) -> Unit,
+    onOpenNowPlaying: () -> Unit,
     onPlayNext: (Track) -> Unit,
     onAddAtEnd: (Track) -> Unit,
     onJumpToAlbum: (String) -> Unit,
@@ -927,6 +1191,13 @@ private fun FoldersDirectoryTabPage(
     onFetchTrackWebMetadata: (Track) -> Unit,
     onWriteTrackMetadata: (Track) -> Unit
 ) {
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    val combinedKeys = remember(subfolders, rawTracks) {
+        subfolders.map { it.folderName } + rawTracks.map { it.fileName }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Current folder header + Up navigation
         Row(
@@ -962,6 +1233,7 @@ private fun FoldersDirectoryTabPage(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 12.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -969,17 +1241,17 @@ private fun FoldersDirectoryTabPage(
             FilterChip(
                 selected = sortOption == FolderSortOption.SYSTEM_DEFAULT,
                 onClick = { onSortChanged(FolderSortOption.SYSTEM_DEFAULT) },
-                label = { Text("System Default", fontSize = 11.sp) }
+                label = { Text("System Default", fontSize = 11.sp, maxLines = 1, softWrap = false) }
             )
             FilterChip(
                 selected = sortOption == FolderSortOption.ALPHABETICAL,
                 onClick = { onSortChanged(FolderSortOption.ALPHABETICAL) },
-                label = { Text("Alphabetical", fontSize = 11.sp) }
+                label = { Text("Alphabetical", fontSize = 11.sp, maxLines = 1, softWrap = false) }
             )
             FilterChip(
                 selected = sortOption == FolderSortOption.MOST_MUSIC_FILES,
                 onClick = { onSortChanged(FolderSortOption.MOST_MUSIC_FILES) },
-                label = { Text("Most Music Files", fontSize = 11.sp) }
+                label = { Text("Most Music Files", fontSize = 11.sp, maxLines = 1, softWrap = false) }
             )
         }
 
@@ -994,71 +1266,96 @@ private fun FoldersDirectoryTabPage(
             ) {
                 AssistChip(
                     onClick = onPlayAllDiscsInFolder,
-                    label = { Text("Play All Discs") },
+                    label = { Text("Play All Discs", maxLines = 1, softWrap = false) },
                     leadingIcon = { Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp)) }
                 )
                 siblings.forEach { siblingPath ->
                     val siblingName = siblingPath.substringAfterLast('/').substringAfterLast('\\')
                     AssistChip(
                         onClick = { onOpenSubfolder(siblingPath) },
-                        label = { Text("Jump to $siblingName") },
+                        label = { Text("Jump to $siblingName", maxLines = 1, softWrap = false) },
                         leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp)) }
                     )
                 }
             }
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
-            // Hierarchical child folders
-            items(subfolders, key = { "dir:${it.absolutePath}" }) { folder ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpenSubfolder(folder.absolutePath) }
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Folder,
-                        contentDescription = null,
-                        tint = if (folder.isDiscFolder) WinampAmberGold else SamsungBlue,
-                        modifier = Modifier.size(32.dp)
-                    )
-                    Column(
+        Box(modifier = Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(end = 36.dp)
+            ) {
+                // Hierarchical child folders
+                items(subfolders, key = { "dir:${it.absolutePath}" }) { folder ->
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 12.dp)
+                            .fillMaxWidth()
+                            .clickable { onOpenSubfolder(folder.absolutePath) }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = folder.folderName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.SemiBold
+                        Icon(
+                            imageVector = Icons.Default.Folder,
+                            contentDescription = null,
+                            tint = if (folder.isDiscFolder) WinampAmberGold else SamsungBlue,
+                            modifier = Modifier.size(32.dp)
                         )
-                        Text(
-                            text = "${folder.recursiveTrackCount} total branch files (${folder.directTrackCount} direct)" +
-                                    if (folder.isDiscFolder) " • Disc ${folder.discNumber}" else "",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = WinampLedGreen
-                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 12.dp)
+                        ) {
+                            Text(
+                                text = folder.folderName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "${folder.recursiveTrackCount} total branch files (${folder.directTrackCount} direct)" +
+                                        if (folder.isDiscFolder) " • Disc ${folder.discNumber}" else "",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = WinampLedGreen,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
                 }
-                HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
+
+                // Raw (non-deduplicated) files in this directory
+                items(rawTracks, key = { "raw:${it.filePath}" }) { track ->
+                    val isPlayingThis = track.filePath == activePlayingPath
+                    RawDirectoryTrackRow(
+                        track = track,
+                        isCurrentlyPlaying = isPlayingThis,
+                        showThumbnail = showListThumbnails,
+                        asCircularDisc = artworkStyle == NowPlayingArtworkStyle.SPINNING_DISC,
+                        webMetadata = webMetadataMap[track.filePath],
+                        onPlay = { onPlayRawTrack(track) },
+                        onOpenNowPlaying = onOpenNowPlaying,
+                        onPlayNext = { onPlayNext(track) },
+                        onAddAtEnd = { onAddAtEnd(track) },
+                        onJumpToAlbum = { onJumpToAlbum(track.album) },
+                        onJumpToArtist = { onJumpToArtist(track.artist) },
+                        onFetchWebMetadata = { onFetchTrackWebMetadata(track) },
+                        onWriteMetadataToFile = { onWriteTrackMetadata(track) }
+                    )
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
+                }
             }
 
-            // Raw (non-deduplicated) files in this directory
-            items(rawTracks, key = { "raw:${it.filePath}" }) { track ->
-                RawDirectoryTrackRow(
-                    track = track,
-                    webMetadata = webMetadataMap[track.filePath],
-                    onPlay = { onPlayRawTrack(track) },
-                    onPlayNext = { onPlayNext(track) },
-                    onAddAtEnd = { onAddAtEnd(track) },
-                    onJumpToAlbum = { onJumpToAlbum(track.album) },
-                    onJumpToArtist = { onJumpToArtist(track.artist) },
-                    onFetchWebMetadata = { onFetchTrackWebMetadata(track) },
-                    onWriteMetadataToFile = { onWriteTrackMetadata(track) }
+            if (combinedKeys.isNotEmpty()) {
+                FastAlphabetScrollbar(
+                    items = combinedKeys,
+                    listState = listState,
+                    onLetterSelected = { idx -> scope.launch { listState.scrollToItem(idx) } },
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
-                HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
             }
         }
     }
@@ -1067,8 +1364,12 @@ private fun FoldersDirectoryTabPage(
 @Composable
 private fun DeduplicatedTrackRow(
     group: DeduplicatedTrackGroup,
+    isCurrentlyPlaying: Boolean,
+    showThumbnail: Boolean,
+    asCircularDisc: Boolean,
     webMetadata: WebMetadataEntity?,
     onPlay: () -> Unit,
+    onOpenNowPlaying: () -> Unit,
     onBadgeClick: () -> Unit,
     onPlayNext: () -> Unit,
     onAddAtEnd: () -> Unit,
@@ -1086,17 +1387,23 @@ private fun DeduplicatedTrackRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onPlay() }
+            .background(if (isCurrentlyPlaying) SamsungBlue.copy(alpha = 0.16f) else Color.Transparent)
+            .clickable {
+                if (isCurrentlyPlaying) onOpenNowPlaying() else onPlay()
+            }
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkThumbnail(
-            artworkUri = track.artworkUri,
-            fallbackIcon = Icons.Default.MusicNote,
-            fallbackTint = SamsungBlue,
-            size = 40.dp,
-            cornerRadius = 8.dp
-        )
+        if (showThumbnail) {
+            ArtworkThumbnail(
+                artworkUri = track.artworkUri,
+                fallbackIcon = if (isCurrentlyPlaying) Icons.Default.Equalizer else Icons.Default.MusicNote,
+                fallbackTint = if (isCurrentlyPlaying) WinampLedGreen else SamsungBlue,
+                size = 40.dp,
+                cornerRadius = 8.dp,
+                asCircularDisc = asCircularDisc
+            )
+        }
 
         Column(
             modifier = Modifier
@@ -1107,24 +1414,44 @@ private fun DeduplicatedTrackRow(
                 Text(
                     text = track.title,
                     style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = if (isCurrentlyPlaying) FontWeight.ExtraBold else FontWeight.SemiBold,
+                    color = if (isCurrentlyPlaying) WinampLedGreen else Color.White,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false)
                 )
+                if (isCurrentlyPlaying) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "PLAYING",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WinampLedGreen,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(WinampLedGreen.copy(alpha = 0.15f))
+                            .border(1.dp, WinampLedGreen, RoundedCornerShape(4.dp))
+                            .clickable { onOpenNowPlaying() }
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                }
                 if (isUnsavedWebMatch) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Web Match — Unsaved",
-                        fontSize = 10.sp,
+                        text = "Web Match",
+                        fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         color = WinampAmberGold,
+                        maxLines = 1,
+                        softWrap = false,
                         modifier = Modifier
                             .clip(RoundedCornerShape(4.dp))
                             .background(WinampAmberGold.copy(alpha = 0.15f))
                             .border(1.dp, WinampAmberGold, RoundedCornerShape(4.dp))
                             .clickable { onWriteMetadataToFile() }
-                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
                     )
                 }
             }
@@ -1139,7 +1466,9 @@ private fun DeduplicatedTrackRow(
                 Text(
                     text = "Candidate: ${webMetadata.candidateTitle} — ${webMetadata.candidateArtist}",
                     style = MaterialTheme.typography.labelSmall,
-                    color = WinampAmberGold
+                    color = WinampAmberGold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -1162,21 +1491,36 @@ private fun DeduplicatedTrackRow(
             Text(
                 text = track.formatBadgeText,
                 fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
+                fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (track.alternateVariantsCount > 0) WinampAmberGold else WinampLedGreen,
+                maxLines = 1,
+                softWrap = false,
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
             )
         }
 
         Box {
-            IconButton(onClick = { showMenu = true }) {
+            IconButton(
+                onClick = { showMenu = true },
+                modifier = Modifier.size(36.dp)
+            ) {
                 Icon(Icons.Default.MoreVert, contentDescription = "Track Actions")
             }
             DropdownMenu(
                 expanded = showMenu,
                 onDismissRequest = { showMenu = false }
             ) {
+                if (isCurrentlyPlaying) {
+                    DropdownMenuItem(
+                        text = { Text("Open Now Playing Screen") },
+                        onClick = {
+                            showMenu = false
+                            onOpenNowPlaying()
+                        }
+                    )
+                    HorizontalDivider()
+                }
                 DropdownMenuItem(
                     text = { Text("Play Next (Immediate FIFO Queue)") },
                     onClick = {
@@ -1245,8 +1589,12 @@ private fun DeduplicatedTrackRow(
 @Composable
 private fun RawDirectoryTrackRow(
     track: Track,
+    isCurrentlyPlaying: Boolean,
+    showThumbnail: Boolean,
+    asCircularDisc: Boolean,
     webMetadata: WebMetadataEntity?,
     onPlay: () -> Unit,
+    onOpenNowPlaying: () -> Unit,
     onPlayNext: () -> Unit,
     onAddAtEnd: () -> Unit,
     onJumpToAlbum: () -> Unit,
@@ -1261,29 +1609,56 @@ private fun RawDirectoryTrackRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onPlay() }
+            .background(if (isCurrentlyPlaying) SamsungBlue.copy(alpha = 0.16f) else Color.Transparent)
+            .clickable {
+                if (isCurrentlyPlaying) onOpenNowPlaying() else onPlay()
+            }
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        ArtworkThumbnail(
-            artworkUri = track.artworkUri,
-            fallbackIcon = Icons.Default.MusicNote,
-            fallbackTint = WinampLedGreen,
-            size = 38.dp,
-            cornerRadius = 8.dp
-        )
+        if (showThumbnail) {
+            ArtworkThumbnail(
+                artworkUri = track.artworkUri,
+                fallbackIcon = if (isCurrentlyPlaying) Icons.Default.Equalizer else Icons.Default.MusicNote,
+                fallbackTint = WinampLedGreen,
+                size = 38.dp,
+                cornerRadius = 8.dp,
+                asCircularDisc = asCircularDisc
+            )
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 10.dp)
         ) {
-            Text(
-                text = track.fileName,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = track.fileName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (isCurrentlyPlaying) FontWeight.ExtraBold else FontWeight.SemiBold,
+                    color = if (isCurrentlyPlaying) WinampLedGreen else Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (isCurrentlyPlaying) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "PLAYING",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WinampLedGreen,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(WinampLedGreen.copy(alpha = 0.15f))
+                            .border(1.dp, WinampLedGreen, RoundedCornerShape(4.dp))
+                            .clickable { onOpenNowPlaying() }
+                            .padding(horizontal = 5.dp, vertical = 2.dp)
+                    )
+                }
+            }
             Text(
                 text = "${track.title} • ${track.artist} (${track.audioQuality.telemetrySummary})",
                 style = MaterialTheme.typography.labelSmall,
@@ -1296,19 +1671,34 @@ private fun RawDirectoryTrackRow(
                     text = "Web Match — Unsaved",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
-                    color = WinampAmberGold
+                    color = WinampAmberGold,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
 
         Box {
-            IconButton(onClick = { showMenu = true }) {
+            IconButton(
+                onClick = { showMenu = true },
+                modifier = Modifier.size(36.dp)
+            ) {
                 Icon(Icons.Default.MoreVert, contentDescription = "Raw File Actions")
             }
             DropdownMenu(
                 expanded = showMenu,
                 onDismissRequest = { showMenu = false }
             ) {
+                if (isCurrentlyPlaying) {
+                    DropdownMenuItem(
+                        text = { Text("Open Now Playing Screen") },
+                        onClick = {
+                            showMenu = false
+                            onOpenNowPlaying()
+                        }
+                    )
+                    HorizontalDivider()
+                }
                 DropdownMenuItem(
                     text = { Text("Play Next (Immediate FIFO Queue)") },
                     onClick = {

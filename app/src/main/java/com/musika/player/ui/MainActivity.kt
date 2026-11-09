@@ -8,8 +8,10 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
@@ -21,8 +23,10 @@ import com.musika.player.ui.theme.MusikaTheme
 
 /**
  * Main Entry Activity for Musika.
- * Requests MANAGE_EXTERNAL_STORAGE (with fallback to READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE)
- * once at initial setup (Specification #2) and hosts the Samsung Music + Winamp Hybrid UI.
+ * - Requests MANAGE_EXTERNAL_STORAGE (with fallback to READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE)
+ *   and POST_NOTIFICATIONS (Android 13+) for the Foreground MediaSession notification.
+ * - Provides Android's native system folder selector (ACTION_OPEN_DOCUMENT_TREE).
+ * - Hosts the Samsung Music + Winamp Hybrid UI with full edge-to-edge safe window insets.
  */
 class MainActivity : ComponentActivity() {
 
@@ -47,17 +51,49 @@ class MainActivity : ComponentActivity() {
         viewModel.triggerLibraryScan()
     }
 
+    private val nativeFolderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { treeUri: Uri? ->
+        if (treeUri != null) {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+            }
+            val resolvedPath = SettingsPreferences.resolveDocumentTreeUriToPath(treeUri)
+            if (!resolvedPath.isNullOrBlank()) {
+                viewModel.setMusicalRootFolder(resolvedPath)
+                viewModel.setShowSettingsDialog(false)
+                Toast.makeText(
+                    this,
+                    "Musical Root set to: $resolvedPath",
+                    Toast.LENGTH_SHORT
+                ).show()
+            } else {
+                Toast.makeText(
+                    this,
+                    "Could not resolve folder path from selection",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
 
         // Attach DualQueueEngine to the real ExoPlayer / MediaSessionService bridge
         MusikaPlaybackService.attachEngineToExoPlayer(applicationContext, viewModel.dualQueueEngine)
 
-        // Request MANAGE_EXTERNAL_STORAGE (with fallback to READ_MEDIA_AUDIO) once at setup
+        // Request MANAGE_EXTERNAL_STORAGE (with fallback to READ_MEDIA_AUDIO) + POST_NOTIFICATIONS once at setup
         if (!settingsPreferences.hasRequestedInitialPermissions.value) {
             settingsPreferences.markInitialPermissionsRequested()
-            requestStoragePermissionsWithFallback()
+            requestStorageAndNotificationPermissions()
         } else {
+            requestNotificationPermissionIfNeeded()
             viewModel.triggerLibraryScan()
         }
 
@@ -65,13 +101,40 @@ class MainActivity : ComponentActivity() {
             MusikaTheme {
                 MusikaMainScreen(
                     viewModel = viewModel,
-                    onRequestStoragePermissions = ::requestStoragePermissionsWithFallback
+                    onRequestStoragePermissions = ::requestStorageAndNotificationPermissions,
+                    onLaunchNativeFolderPicker = ::launchNativeFolderPicker,
+                    onExitApp = { finish() }
                 )
             }
         }
     }
 
-    private fun requestStoragePermissionsWithFallback() {
+    private fun launchNativeFolderPicker() {
+        try {
+            nativeFolderPickerLauncher.launch(null)
+        } catch (_: Exception) {
+            Toast.makeText(
+                this,
+                "System folder picker is not available on this device; use manual path input.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                audioPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+            }
+        }
+    }
+
+    private fun requestStorageAndNotificationPermissions() {
+        requestFallbackAndNotificationPermissions()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
@@ -81,25 +144,26 @@ class MainActivity : ComponentActivity() {
                     )
                     startActivity(intent)
                 } catch (_: Exception) {
-                    // Fallback to READ_MEDIA_AUDIO / READ_EXTERNAL_STORAGE
-                    requestFallbackAudioPermissions()
                 }
             } else {
                 viewModel.triggerLibraryScan()
             }
-        } else {
-            requestFallbackAudioPermissions()
         }
     }
 
-    private fun requestFallbackAudioPermissions() {
-        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_AUDIO
+    private fun requestFallbackAndNotificationPermissions() {
+        val permissions = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
-        if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
-            audioPermissionLauncher.launch(arrayOf(permission))
+        val missing = permissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            audioPermissionLauncher.launch(missing.toTypedArray())
         } else {
             viewModel.triggerLibraryScan()
         }

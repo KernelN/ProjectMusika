@@ -2,11 +2,14 @@ package com.musika.player.data.repository
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Environment
+import android.provider.DocumentsContract
 import com.musika.player.core.model.AlbumSortOption
 import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.FolderSortOption
 import com.musika.player.core.model.LoopMode
+import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.SongSortOption
 import java.io.File
@@ -105,6 +108,21 @@ class SettingsPreferences(context: Context) {
     )
     val folderSortOption: StateFlow<FolderSortOption> = _folderSortOption.asStateFlow()
 
+    private val _artworkStyle = MutableStateFlow(
+        runCatching {
+            NowPlayingArtworkStyle.valueOf(
+                prefs.getString(KEY_ARTWORK_STYLE, NowPlayingArtworkStyle.ROUNDED_SQUARE.name)
+                    ?: NowPlayingArtworkStyle.ROUNDED_SQUARE.name
+            )
+        }.getOrDefault(NowPlayingArtworkStyle.ROUNDED_SQUARE)
+    )
+    val artworkStyle: StateFlow<NowPlayingArtworkStyle> = _artworkStyle.asStateFlow()
+
+    private val _showListTrackThumbnails = MutableStateFlow(
+        prefs.getBoolean(KEY_SHOW_LIST_THUMBNAILS, true)
+    )
+    val showListTrackThumbnails: StateFlow<Boolean> = _showListTrackThumbnails.asStateFlow()
+
     fun setMusicalRootPath(path: String) {
         val normalized = path.replace('\\', '/').trimEnd('/').ifEmpty { "/" }
         prefs.edit().putString(KEY_MUSICAL_ROOT_PATH, normalized).apply()
@@ -151,6 +169,16 @@ class SettingsPreferences(context: Context) {
         _folderSortOption.value = option
     }
 
+    fun setArtworkStyle(style: NowPlayingArtworkStyle) {
+        prefs.edit().putString(KEY_ARTWORK_STYLE, style.name).apply()
+        _artworkStyle.value = style
+    }
+
+    fun setShowListTrackThumbnails(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SHOW_LIST_THUMBNAILS, enabled).apply()
+        _showListTrackThumbnails.value = enabled
+    }
+
     fun resolveEffectiveScanRoot(): File {
         return if (_alwaysScanEntirePhone.value) {
             try {
@@ -174,5 +202,52 @@ class SettingsPreferences(context: Context) {
         const val KEY_ALBUM_SORT = "album_sort"
         const val KEY_ARTIST_SORT = "artist_sort"
         const val KEY_FOLDER_SORT = "folder_sort"
+        const val KEY_ARTWORK_STYLE = "artwork_style"
+        const val KEY_SHOW_LIST_THUMBNAILS = "show_list_thumbnails"
+
+        /**
+         * Resolves an Android native folder picker (ACTION_OPEN_DOCUMENT_TREE) Uri into an
+         * absolute filesystem path on Internal Storage (/storage/emulated/0/...) or SD card (/storage/<UUID>/...).
+         */
+        fun resolveDocumentTreeUriToPath(treeUri: Uri): String? {
+            return try {
+                val docId = DocumentsContract.getTreeDocumentId(treeUri) ?: return null
+                resolveDocumentIdToPath(docId)
+            } catch (_: Exception) {
+                val rawPath = treeUri.path ?: return null
+                val afterTree = rawPath.substringAfter("/tree/", "")
+                if (afterTree.isNotBlank()) {
+                    resolveDocumentIdToPath(Uri.decode(afterTree))
+                } else {
+                    null
+                }
+            }
+        }
+
+        fun resolveDocumentIdToPath(docId: String): String {
+            if (docId.startsWith("raw:")) {
+                return docId.removePrefix("raw:")
+            }
+            val split = docId.split(":", limit = 2)
+            val volumeId = split.getOrNull(0).orEmpty()
+            val relPath = split.getOrNull(1).orEmpty().trim('/')
+            val baseRoot = if (volumeId.equals("primary", ignoreCase = true) || volumeId.isBlank()) {
+                try {
+                    Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
+                } catch (_: Exception) {
+                    "/storage/emulated/0"
+                }
+            } else if (volumeId.equals("home", ignoreCase = true)) {
+                val ext = try {
+                    Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
+                } catch (_: Exception) {
+                    "/storage/emulated/0"
+                }
+                "$ext/Documents"
+            } else {
+                "/storage/$volumeId"
+            }
+            return if (relPath.isEmpty()) baseRoot else "$baseRoot/$relPath"
+        }
     }
 }
