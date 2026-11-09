@@ -6,11 +6,14 @@ import androidx.test.core.app.ApplicationProvider
 import com.musika.player.core.model.AlbumSortOption
 import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.AudioQuality
+import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
 import com.musika.player.data.local.MusikaDatabase
 import com.musika.player.data.repository.LibraryRepository
+import com.musika.player.data.repository.SettingsPreferences
 import com.musika.player.player.DualQueueEngine
+import com.musika.player.ui.components.findIndexForAlphabetLetter
 import java.io.File
 import java.net.URI
 import kotlinx.coroutines.flow.first
@@ -238,5 +241,51 @@ class TestGroundRealLibraryTest {
         assertEquals(2, loadedTracks.size)
         assertEquals("Dancing Queen", loadedTracks.last().title)
         assertEquals(0L, engine.state.value.positionMs)
+    }
+
+    @Test
+    fun `sort-aware alphabet quick access jumps to active sort key letter (Artist Q, Directory R)`() {
+        // Tracks sorted by Artist where song titles do NOT match artist letters
+        val artistSortedTracks = listOf(
+            "ABBA" to "Waterloo",
+            "Alice In Chains" to "Man in the Box",
+            "Metallica" to "Enter Sandman",
+            "Queen" to "Another One Bites the Dust",
+            "Queen" to "Bohemian Rhapsody",
+            "Yes" to "Owner of a Lonely Heart"
+        )
+        val artistSortKeys = artistSortedTracks.map { it.first }
+        val qIndex = findIndexForAlphabetLetter(artistSortKeys, 'Q')
+        assertEquals(
+            "Pressing Q when sorted by Artist must jump to first Queen track (index 3)",
+            3,
+            qIndex
+        )
+        assertEquals("Another One Bites the Dust", artistSortedTracks[qIndex].second)
+
+        // Tracks sorted by Directory (topmost folder name from Root)
+        val dirSortKeys = listOf("ABBA", "ABBA", "Riff", "Riff", "Yes")
+        val rIndex = findIndexForAlphabetLetter(dirSortKeys, 'R')
+        assertEquals("Pressing R when sorted by Directory must jump to first Riff track (index 2)", 2, rIndex)
+    }
+
+    @Test
+    fun `native folder picker DocumentTree IDs resolve to filesystem paths and Settings persist 4 artwork styles`() {
+        val sdPath = SettingsPreferences.resolveDocumentIdToPath("1A2B-3C4D:Music/Rock")
+        assertEquals("/storage/1A2B-3C4D/Music/Rock", sdPath)
+
+        val rawPath = SettingsPreferences.resolveDocumentIdToPath("raw:/storage/emulated/0/TestGround")
+        assertEquals("/storage/emulated/0/TestGround", rawPath)
+
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val prefs = SettingsPreferences(context)
+        NowPlayingArtworkStyle.entries.forEach { style ->
+            prefs.setArtworkStyle(style)
+            assertEquals(style, prefs.artworkStyle.value)
+        }
+        prefs.setShowListTrackThumbnails(false)
+        assertEquals(false, prefs.showListTrackThumbnails.value)
+        prefs.setShowListTrackThumbnails(true)
+        assertEquals(true, prefs.showListTrackThumbnails.value)
     }
 }
