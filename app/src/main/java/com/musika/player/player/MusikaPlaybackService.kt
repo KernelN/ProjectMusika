@@ -1,11 +1,15 @@
 package com.musika.player.player
 
+import android.app.PendingIntent
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
+import androidx.core.content.ContextCompat
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
@@ -14,37 +18,58 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.session.DefaultMediaNotificationProvider
+import androidx.media3.session.MediaController
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionToken
+import com.google.common.util.concurrent.ListenableFuture
+import com.musika.player.R
 import com.musika.player.core.model.Track
+import com.musika.player.ui.MainActivity
 import java.io.File
 
 /**
- * Media3 Foreground MediaSessionService + Real ExoPlayer Bridge powering background audio playback,
- * real-time seekbar progress advancement, automatic track transitions (FIFO Priority Queue,
- * 3-State Random, 3-State Loop), and hardware media button controls.
+ * Media3 Foreground MediaSessionService + Real ExoPlayer Bridge powering uninterrupted
+ * background audio playback (WakeLock + Foreground Service), Android system Media Style
+ * notification (Previous, Play/Pause, Next, interactive Song Time Seekbar, Cover Art),
+ * real-time seekbar progress advancement, and automatic track transitions.
  */
+@OptIn(UnstableApi::class)
 class MusikaPlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
 
-    @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
+        val notificationProvider = DefaultMediaNotificationProvider.Builder(applicationContext)
+            .build()
+            .apply {
+                setSmallIcon(R.drawable.ic_music_notification)
+            }
+        setMediaNotificationProvider(notificationProvider)
+
         val player = getOrCreateSharedPlayer(applicationContext)
         val sessionPlayer = object : ForwardingPlayer(player) {
             override fun getAvailableCommands(): Player.Commands {
                 return super.getAvailableCommands()
                     .buildUpon()
+                    .add(COMMAND_PLAY_PAUSE)
+                    .add(COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
                     .add(COMMAND_SEEK_TO_NEXT)
                     .add(COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
                     .add(COMMAND_SEEK_TO_PREVIOUS)
                     .add(COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                    .add(COMMAND_GET_CURRENT_MEDIA_ITEM)
+                    .add(COMMAND_GET_TIMELINE)
+                    .add(COMMAND_GET_METADATA)
                     .build()
             }
 
             override fun isCommandAvailable(command: Int): Boolean {
-                if (command == COMMAND_SEEK_TO_NEXT ||
+                if (command == COMMAND_PLAY_PAUSE ||
+                    command == COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM ||
+                    command == COMMAND_SEEK_TO_NEXT ||
                     command == COMMAND_SEEK_TO_NEXT_MEDIA_ITEM ||
                     command == COMMAND_SEEK_TO_PREVIOUS ||
                     command == COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM
@@ -52,6 +77,26 @@ class MusikaPlaybackService : MediaSessionService() {
                     return true
                 }
                 return super.isCommandAvailable(command)
+            }
+
+            override fun play() {
+                super.play()
+                attachedQueueEngine?.setPlaying(true)
+            }
+
+            override fun pause() {
+                super.pause()
+                attachedQueueEngine?.setPlaying(false)
+            }
+
+            override fun seekTo(positionMs: Long) {
+                super.seekTo(positionMs)
+                attachedQueueEngine?.updateProgressFromPlayer(positionMs, duration.coerceAtLeast(0L))
+            }
+
+            override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+                super.seekTo(mediaItemIndex, positionMs)
+                attachedQueueEngine?.updateProgressFromPlayer(positionMs, duration.coerceAtLeast(0L))
             }
 
             override fun seekToNext() {
@@ -70,7 +115,17 @@ class MusikaPlaybackService : MediaSessionService() {
                 attachedQueueEngine?.skipToPrevious()
             }
         }
-        mediaSession = MediaSession.Builder(this, sessionPlayer).build()
+
+        val activityIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+        val sessionActivityPendingIntent = PendingIntent.getActivity(this, 0, activityIntent, pendingFlags)
+
+        mediaSession = MediaSession.Builder(this, sessionPlayer)
+            .setSessionActivity(sessionActivityPendingIntent)
+            .build()
         activeServiceInstance = this
     }
 
@@ -101,6 +156,9 @@ class MusikaPlaybackService : MediaSessionService() {
 
         @Volatile
         private var sharedExoPlayer: ExoPlayer? = null
+
+        @Volatile
+        private var controllerFuture: ListenableFuture<MediaController>? = null
 
         @Volatile
         private var attachedQueueEngine: DualQueueEngine? = null
@@ -140,6 +198,7 @@ class MusikaPlaybackService : MediaSessionService() {
             val player = ExoPlayer.Builder(appCtx)
                 .setAudioAttributes(audioAttributes, true)
                 .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(C.WAKE_MODE_LOCAL)
                 .build()
 
             player.addListener(object : Player.Listener {
@@ -164,18 +223,34 @@ class MusikaPlaybackService : MediaSessionService() {
             return player
         }
 
+        private fun ensureMediaControllerConnected(context: Context) {
+            if (controllerFuture != null) return
+            try {
+                val appCtx = context.applicationContext
+                val sessionToken = SessionToken(appCtx, ComponentName(appCtx, MusikaPlaybackService::class.java))
+                controllerFuture = MediaController.Builder(appCtx, sessionToken).buildAsync()
+            } catch (_: Exception) {
+            }
+        }
+
         /**
-         * Connects [dualQueueEngine] to the real Android [ExoPlayer] and starts the 200ms progress ticker.
+         * Connects [dualQueueEngine] to the real Android [ExoPlayer] + [MediaSessionService]
+         * and starts the 200ms progress ticker.
          */
         fun attachEngineToExoPlayer(context: Context, dualQueueEngine: DualQueueEngine) {
             val appCtx = context.applicationContext
             attachedQueueEngine = dualQueueEngine
+            runOnMainThread {
+                ensureServiceStarted(appCtx)
+                ensureMediaControllerConnected(appCtx)
+            }
 
             dualQueueEngine.playbackDriver = object : DualQueueEngine.PlaybackDriver {
                 override fun onLoadAndPlayTrack(track: Track, startPositionMs: Long, playWhenReady: Boolean) {
                     runOnMainThread {
                         try {
                             ensureServiceStarted(appCtx)
+                            ensureMediaControllerConnected(appCtx)
                             val player = getOrCreateSharedPlayer(appCtx)
                             val mediaItem = buildMediaItem(track)
                             player.setMediaItem(mediaItem)
@@ -196,6 +271,8 @@ class MusikaPlaybackService : MediaSessionService() {
                 override fun onPlayStateChanged(isPlaying: Boolean) {
                     runOnMainThread {
                         try {
+                            ensureServiceStarted(appCtx)
+                            ensureMediaControllerConnected(appCtx)
                             val player = getOrCreateSharedPlayer(appCtx)
                             if (isPlaying && player.mediaItemCount == 0) {
                                 val currentTrack = dualQueueEngine.state.value.currentTrack
@@ -243,8 +320,12 @@ class MusikaPlaybackService : MediaSessionService() {
             if (activeServiceInstance == null) {
                 try {
                     val intent = Intent(context, MusikaPlaybackService::class.java)
-                    context.startService(intent)
+                    ContextCompat.startForegroundService(context, intent)
                 } catch (_: Exception) {
+                    try {
+                        context.startService(Intent(context, MusikaPlaybackService::class.java))
+                    } catch (_: Exception) {
+                    }
                 }
             }
         }
@@ -273,6 +354,9 @@ class MusikaPlaybackService : MediaSessionService() {
                 .setAlbumTitle(track.album)
                 .setDiscNumber(track.discNumber)
                 .setTrackNumber(track.trackNumber)
+                .setIsPlayable(true)
+                .setIsBrowsable(false)
+                .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
 
             if (!track.artworkUri.isNullOrBlank()) {
                 try {
