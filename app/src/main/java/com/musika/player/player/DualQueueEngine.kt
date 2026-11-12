@@ -431,8 +431,134 @@ class DualQueueEngine(
         }
     }
 
+    fun movePriorityQueueTrack(fromIndex: Int, toIndex: Int) {
+        val current = _state.value
+        if (fromIndex in current.priorityQueue.indices &&
+            toIndex in current.priorityQueue.indices &&
+            fromIndex != toIndex
+        ) {
+            val mutable = current.priorityQueue.toMutableList()
+            val moved = mutable.removeAt(fromIndex)
+            mutable.add(toIndex, moved)
+            _state.value = current.copy(priorityQueue = mutable)
+        }
+    }
+
     fun clearPriorityQueue() {
         _state.value = _state.value.copy(priorityQueue = emptyList())
+    }
+
+    /**
+     * Returns whether the upcoming context queue is visible and freely modifiable.
+     * Per user specification: the Queue is visible and modifiable in all modes EXCEPT
+     * when [RandomMode.TRUE_RANDOM] is active (since True Random selects memorylessly on each step).
+     */
+    fun isContextQueueModifiable(): Boolean {
+        return _state.value.randomMode != RandomMode.TRUE_RANDOM
+    }
+
+    /**
+     * Returns the active upcoming context queue order:
+     * - [RandomMode.OFF]: [EngineState.standardQueue]
+     * - [RandomMode.SHUFFLE_POOL]: [EngineState.shufflePool] (or standardQueue if pool not yet built)
+     * - [RandomMode.TRUE_RANDOM]: emptyList() (memoryless random)
+     */
+    fun getVisibleContextQueue(): List<Track> {
+        val current = _state.value
+        return when (current.randomMode) {
+            RandomMode.OFF -> current.standardQueue
+            RandomMode.SHUFFLE_POOL -> current.shufflePool.ifEmpty { current.standardQueue }
+            RandomMode.TRUE_RANDOM -> emptyList()
+        }
+    }
+
+    /**
+     * Moves a track inside the active context queue (Standard Queue when OFF, Shuffle Pool when SHUFFLE_POOL).
+     * No-op if [RandomMode.TRUE_RANDOM] is active.
+     */
+    fun moveContextQueueTrack(fromIndex: Int, toIndex: Int) {
+        val current = _state.value
+        if (current.randomMode == RandomMode.TRUE_RANDOM) return
+
+        if (current.randomMode == RandomMode.SHUFFLE_POOL) {
+            val pool = current.shufflePool.ifEmpty { current.standardQueue }.toMutableList()
+            if (fromIndex in pool.indices && toIndex in pool.indices && fromIndex != toIndex) {
+                val moved = pool.removeAt(fromIndex)
+                pool.add(toIndex, moved)
+                _state.value = current.copy(shufflePool = pool)
+            }
+        } else {
+            val std = current.standardQueue.toMutableList()
+            if (fromIndex in std.indices && toIndex in std.indices && fromIndex != toIndex) {
+                val moved = std.removeAt(fromIndex)
+                std.add(toIndex, moved)
+                _state.value = current.copy(standardQueue = std)
+            }
+        }
+    }
+
+    /**
+     * Removes a track at [index] from the active context queue (Standard Queue and Shuffle Pool).
+     * No-op if [RandomMode.TRUE_RANDOM] is active.
+     */
+    fun removeFromContextQueue(index: Int) {
+        val current = _state.value
+        if (current.randomMode == RandomMode.TRUE_RANDOM) return
+
+        if (current.randomMode == RandomMode.SHUFFLE_POOL) {
+            val pool = current.shufflePool.ifEmpty { current.standardQueue }.toMutableList()
+            if (index in pool.indices) {
+                val removed = pool.removeAt(index)
+                val updatedStandard = current.standardQueue.filterNot { it.filePath == removed.filePath }
+                _state.value = current.copy(
+                    shufflePool = pool,
+                    standardQueue = updatedStandard
+                )
+            }
+        } else {
+            val std = current.standardQueue.toMutableList()
+            if (index in std.indices) {
+                val removed = std.removeAt(index)
+                val updatedPool = current.shufflePool.filterNot { it.filePath == removed.filePath }
+                _state.value = current.copy(
+                    standardQueue = std,
+                    shufflePool = updatedPool
+                )
+            }
+        }
+    }
+
+    /**
+     * Clears the upcoming context queue (keeping the currently playing track if any).
+     */
+    fun clearContextQueue() {
+        val current = _state.value
+        if (current.randomMode == RandomMode.TRUE_RANDOM) return
+        val keep = current.currentTrack?.let { listOf(it) } ?: emptyList()
+        _state.value = current.copy(
+            standardQueue = keep,
+            shufflePool = keep
+        )
+    }
+
+    /**
+     * Exports the current Queue (Priority Queue + active Context Queue in current playback order)
+     * as an ordered list of [Track]s ready to be saved as a Playlist.
+     */
+    fun exportQueueTracksForPlaylist(): List<Track> {
+        val current = _state.value
+        val result = mutableListOf<Track>()
+        current.currentTrack?.let { result.add(it) }
+        result.addAll(current.priorityQueue)
+        if (current.randomMode != RandomMode.TRUE_RANDOM) {
+            val contextList = getVisibleContextQueue()
+            for (t in contextList) {
+                if (result.none { it.filePath == t.filePath }) {
+                    result.add(t)
+                }
+            }
+        }
+        return result
     }
 
     /**

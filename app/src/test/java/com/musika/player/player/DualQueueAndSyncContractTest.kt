@@ -142,6 +142,44 @@ class DualQueueAndSyncContractTest {
         )
     }
 
+    @Test
+    fun `queue viewer allows free reordering and removal in OFF and SHUFFLE_POOL but locks context in TRUE_RANDOM`() {
+        val engine = DualQueueEngine(
+            initialRandomMode = RandomMode.OFF,
+            initialLoopMode = LoopMode.NO_LOOP
+        )
+        engine.playFromContext(song1, listOf(song1, song2, song3), "Album X")
+        engine.enqueueImmediate(immediate1)
+        engine.enqueueImmediate(immediate2)
+
+        assertTrue(engine.isContextQueueModifiable())
+        assertEquals(listOf(song1, song2, song3), engine.getVisibleContextQueue())
+
+        // Reorder Priority Queue (swap Immediate 2 ahead of Immediate 1)
+        engine.movePriorityQueueTrack(fromIndex = 1, toIndex = 0)
+        assertEquals(listOf(immediate2, immediate1), engine.state.value.priorityQueue)
+
+        // Reorder Standard Context Queue (move song3 ahead of song2)
+        engine.moveContextQueueTrack(fromIndex = 2, toIndex = 1)
+        assertEquals(listOf(song1, song3, song2), engine.getVisibleContextQueue())
+
+        // Remove song2 from Context Queue
+        engine.removeFromContextQueue(index = 2)
+        assertEquals(listOf(song1, song3), engine.getVisibleContextQueue())
+
+        // Export Queue as Playlist tracks preserves exact playback order
+        val exported = engine.exportQueueTracksForPlaylist()
+        assertEquals(
+            listOf(song1.filePath, immediate2.filePath, immediate1.filePath, song3.filePath),
+            exported.map { it.filePath }
+        )
+
+        // Switch to TRUE_RANDOM -> context queue is memoryless and locked from manual reorder
+        engine.setRandomMode(RandomMode.TRUE_RANDOM)
+        assertEquals(false, engine.isContextQueueModifiable())
+        assertTrue(engine.getVisibleContextQueue().isEmpty())
+    }
+
     private fun makeTrack(title: String, artist: String, album: String, trackNum: Int): Track {
         val slug = title.lowercase().replace(" ", "_")
         return Track(

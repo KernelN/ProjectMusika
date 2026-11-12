@@ -12,6 +12,7 @@ import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
 import com.musika.player.core.model.LoopMode
 import com.musika.player.core.model.NowPlayingArtworkStyle
+import com.musika.player.core.model.Playlist
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
@@ -25,6 +26,7 @@ import com.musika.player.data.repository.SettingsPreferences
 import com.musika.player.data.scanner.MusicalRootScanner
 import com.musika.player.player.DualQueueEngine
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,6 +35,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -40,6 +43,7 @@ enum class MusikaTab(val title: String) {
     SONGS("Songs"),
     ALBUMS("Albums"),
     ARTISTS("Artists"),
+    PLAYLISTS("Playlists"),
     FOLDERS("Folders")
 }
 
@@ -78,6 +82,19 @@ class MusikaViewModel(
 
     private val _selectedArtistDetail = MutableStateFlow<String?>(null)
     val selectedArtistDetail: StateFlow<String?> = _selectedArtistDetail.asStateFlow()
+
+    // Selected Album chip inside the Artist view's horizontal album index (null = "All Songs")
+    private val _selectedArtistAlbumFilter = MutableStateFlow<String?>(null)
+    val selectedArtistAlbumFilter: StateFlow<String?> = _selectedArtistAlbumFilter.asStateFlow()
+
+    private val _selectedPlaylistId = MutableStateFlow<Long?>(null)
+    val selectedPlaylistId: StateFlow<Long?> = _selectedPlaylistId.asStateFlow()
+
+    private val _addToPlaylistCandidates = MutableStateFlow<List<Track>?>(null)
+    val addToPlaylistCandidates: StateFlow<List<Track>?> = _addToPlaylistCandidates.asStateFlow()
+
+    // Recursive scroll position memory keyed by section/folder/detail path
+    private val scrollPositionMemory = ConcurrentHashMap<String, Pair<Int, Int>>()
 
     private val _currentFolderPath = MutableStateFlow(settings.musicalRootPath.value)
     val currentFolderPath: StateFlow<String> = _currentFolderPath.asStateFlow()
@@ -119,6 +136,17 @@ class MusikaViewModel(
     val folderSortOption: StateFlow<FolderSortOption> = settings.folderSortOption
     val artworkStyle: StateFlow<NowPlayingArtworkStyle> = settings.artworkStyle
     val showListTrackThumbnails: StateFlow<Boolean> = settings.showListTrackThumbnails
+    val hudScale: StateFlow<Float> = settings.hudScale
+
+    val playlists: StateFlow<List<Playlist>> = repository.getPlaylistsFlow()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val selectedPlaylistTracks: StateFlow<List<Track>> = _selectedPlaylistId
+        .flatMapLatest { playlistId ->
+            if (playlistId == null) flowOf(emptyList())
+            else repository.getTracksForPlaylistFlow(playlistId)
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val deduplicatedSongs: StateFlow<List<DeduplicatedTrackGroup>> = settings.songSortOption
         .flatMapLatest { sort -> repository.getDeduplicatedSongsFlow(sort) }
@@ -178,6 +206,15 @@ class MusikaViewModel(
     fun setFolderSort(option: FolderSortOption) = settings.setFolderSortOption(option)
     fun setArtworkStyle(style: NowPlayingArtworkStyle) = settings.setArtworkStyle(style)
     fun setShowListTrackThumbnails(enabled: Boolean) = settings.setShowListTrackThumbnails(enabled)
+    fun setHudScale(scale: Float) = settings.setHudScale(scale)
+
+    fun saveScrollPosition(key: String, firstVisibleItemIndex: Int, firstVisibleItemScrollOffset: Int) {
+        scrollPositionMemory[key] = firstVisibleItemIndex to firstVisibleItemScrollOffset
+    }
+
+    fun getSavedScrollPosition(key: String): Pair<Int, Int> {
+        return scrollPositionMemory[key] ?: (0 to 0)
+    }
 
     fun setMusicalRootFolder(newRootPath: String) {
         settings.setMusicalRootPath(newRootPath)
@@ -219,6 +256,7 @@ class MusikaViewModel(
 
     fun jumpToAlbum(albumTitle: String) {
         _selectedArtistDetail.value = null
+        _selectedPlaylistId.value = null
         _selectedAlbumDetail.value = albumTitle
         _selectedTab.value = MusikaTab.ALBUMS
     }
@@ -229,12 +267,52 @@ class MusikaViewModel(
 
     fun jumpToArtist(artistName: String) {
         _selectedAlbumDetail.value = null
+        _selectedPlaylistId.value = null
+        _selectedArtistAlbumFilter.value = null
         _selectedArtistDetail.value = artistName
         _selectedTab.value = MusikaTab.ARTISTS
     }
 
+    fun selectArtistAlbumFilter(albumTitle: String?) {
+        _selectedArtistAlbumFilter.value = albumTitle
+    }
+
     fun closeArtistDetail() {
         _selectedArtistDetail.value = null
+        _selectedArtistAlbumFilter.value = null
+    }
+
+    fun selectPlaylist(playlistId: Long) {
+        _selectedPlaylistId.value = playlistId
+        _selectedTab.value = MusikaTab.PLAYLISTS
+    }
+
+    fun closePlaylistDetail() {
+        _selectedPlaylistId.value = null
+    }
+
+    /**
+     * Jumps directly back to the Root of the current section ("Up to Root" button).
+     */
+    fun jumpToSectionRoot() {
+        when (_selectedTab.value) {
+            MusikaTab.ALBUMS -> _selectedAlbumDetail.value = null
+            MusikaTab.ARTISTS -> {
+                _selectedArtistDetail.value = null
+                _selectedArtistAlbumFilter.value = null
+            }
+            MusikaTab.PLAYLISTS -> _selectedPlaylistId.value = null
+            MusikaTab.FOLDERS -> jumpToRootFolder()
+            MusikaTab.SONGS -> Unit
+        }
+    }
+
+    fun jumpToRootFolder() {
+        val root = MusicalRootScanner.normalizePath(settings.resolveEffectiveScanRoot().absolutePath)
+        _currentFolderPath.value = root
+        viewModelScope.launch {
+            _currentFolderNode.value = repository.getFolderNode(root)
+        }
     }
 
     /**
@@ -385,6 +463,95 @@ class MusikaViewModel(
 
     fun clearStatusBanner() {
         _statusBannerMessage.value = null
+    }
+
+    // =========================================================================
+    // PLAYLISTS & QUEUE-TO-PLAYLIST MANAGEMENT
+    // =========================================================================
+
+    fun createPlaylist(name: String, initialTracks: List<Track> = emptyList()) {
+        viewModelScope.launch {
+            val id = repository.createPlaylist(name, initialTracks)
+            if (id > 0L) {
+                _statusBannerMessage.value = "Created playlist '$name' (${initialTracks.size} tracks)"
+            }
+        }
+    }
+
+    fun renamePlaylist(playlistId: Long, newName: String) {
+        viewModelScope.launch {
+            repository.renamePlaylist(playlistId, newName)
+            _statusBannerMessage.value = "Renamed playlist to '$newName'"
+        }
+    }
+
+    fun deletePlaylist(playlistId: Long) {
+        viewModelScope.launch {
+            if (_selectedPlaylistId.value == playlistId) {
+                _selectedPlaylistId.value = null
+            }
+            repository.deletePlaylist(playlistId)
+            _statusBannerMessage.value = "Deleted playlist"
+        }
+    }
+
+    fun openAddToPlaylistDialog(tracks: List<Track>) {
+        if (tracks.isNotEmpty()) {
+            _addToPlaylistCandidates.value = tracks
+        }
+    }
+
+    fun dismissAddToPlaylistDialog() {
+        _addToPlaylistCandidates.value = null
+    }
+
+    fun addTracksToExistingPlaylist(playlistId: Long, playlistName: String, tracks: List<Track>) {
+        viewModelScope.launch {
+            repository.addTracksToPlaylist(playlistId, tracks)
+            _addToPlaylistCandidates.value = null
+            _statusBannerMessage.value = "Added ${tracks.size} track(s) to '$playlistName'"
+        }
+    }
+
+    fun createPlaylistWithTracks(name: String, tracks: List<Track>) {
+        viewModelScope.launch {
+            repository.createPlaylist(name, tracks)
+            _addToPlaylistCandidates.value = null
+            _statusBannerMessage.value = "Created playlist '$name' with ${tracks.size} track(s)"
+        }
+    }
+
+    fun removeTrackFromPlaylist(playlistId: Long, positionIndex: Int) {
+        viewModelScope.launch {
+            repository.removeTrackFromPlaylist(playlistId, positionIndex)
+        }
+    }
+
+    fun moveTrackInPlaylist(playlistId: Long, fromIndex: Int, toIndex: Int) {
+        viewModelScope.launch {
+            repository.moveTrackInPlaylist(playlistId, fromIndex, toIndex)
+        }
+    }
+
+    fun playPlaylistTrack(selectedTrack: Track, playlistTracks: List<Track>, playlistName: String) {
+        dualQueueEngine.playFromContext(
+            selectedTrack = selectedTrack,
+            contextTracks = playlistTracks,
+            contextName = "Playlist: $playlistName"
+        )
+    }
+
+    fun saveCurrentQueueAsPlaylist(playlistName: String) {
+        val queueTracks = dualQueueEngine.exportQueueTracksForPlaylist()
+        if (queueTracks.isEmpty()) {
+            _statusBannerMessage.value = "Queue is empty — nothing to save"
+            return
+        }
+        viewModelScope.launch {
+            repository.createPlaylist(playlistName, queueTracks)
+            _statusBannerMessage.value =
+                "Saved current Queue (${queueTracks.size} tracks) as playlist '$playlistName'"
+        }
     }
 
     // =========================================================================

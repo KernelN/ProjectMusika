@@ -7,7 +7,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -345,6 +347,7 @@ fun WinampTelemetryBar(
  * Respects system navigation bar insets so it is never hidden behind phone UI.
  * Tapping anywhere on the bar opens the full Now Playing screen.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WinampMiniPlayerBar(
     state: DualQueueEngine.EngineState,
@@ -405,14 +408,16 @@ fun WinampMiniPlayerBar(
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.basicMarquee()
                         )
                         Text(
                             text = "${track.artist} • ${track.album}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.basicMarquee()
                         )
                     }
 
@@ -512,6 +517,7 @@ fun WinampMiniPlayerBar(
  * (including Spinning Vinyl Disc and Full-Screen Spotify-style background), 1-tap Cross-Navigation
  * to Album / Artist / Folder, 3-state Random & 3-state Loop controls, and full system-bar safe insets.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun NowPlayingScreenOverlay(
     state: DualQueueEngine.EngineState,
@@ -610,14 +616,17 @@ fun NowPlayingScreenOverlay(
 
                 Spacer(modifier = Modifier.height(18.dp))
 
-                // Track Title, Artist, Album
+                // Track Title, Artist, Album (with smooth auto marquee scrolling when overflowing)
                 Text(
                     text = track.title,
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
-                    maxLines = 2,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.Center
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .basicMarquee()
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
@@ -626,10 +635,12 @@ fun NowPlayingScreenOverlay(
                     color = SamsungBlue,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clickable {
-                        onDismiss()
-                        onJumpToArtist(track.artist)
-                    }
+                    modifier = Modifier
+                        .basicMarquee()
+                        .clickable {
+                            onDismiss()
+                            onJumpToArtist(track.artist)
+                        }
                 )
                 Text(
                     text = "${track.album} • Disc ${track.discNumber}, Track ${track.trackNumber}",
@@ -637,10 +648,12 @@ fun NowPlayingScreenOverlay(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clickable {
-                        onDismiss()
-                        onJumpToAlbum(track.album)
-                    }
+                    modifier = Modifier
+                        .basicMarquee()
+                        .clickable {
+                            onDismiss()
+                            onJumpToAlbum(track.album)
+                        }
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))

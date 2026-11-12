@@ -20,13 +20,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.UnfoldLess
 import androidx.compose.material.icons.filled.UnfoldMore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +40,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.NowPlayingArtworkStyle
+import com.musika.player.core.model.Playlist
+import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.Track
 import com.musika.player.data.metadata.MetadataWriteDialogState
 import com.musika.player.data.metadata.WriteConfirmationStep
@@ -62,6 +70,7 @@ import com.musika.player.ui.MultiFolderSheetState
 import com.musika.player.ui.theme.SamsungBlue
 import com.musika.player.ui.theme.WinampAmberGold
 import com.musika.player.ui.theme.WinampLedGreen
+import java.util.Locale
 
 /**
  * Multi-Folder Disambiguation Bottom Sheet (Specification #4):
@@ -354,35 +363,109 @@ fun MetadataWriteConfirmationDialog(
 }
 
 /**
- * Dual Queue Bottom Sheet (Specification #8):
- * Displays both the Spotify-style FIFO Priority Queue ("Play Next") and the
- * Winamp-style Standard Queue ("Add at End").
+ * Dual Queue Bottom Sheet (Specification #8 + Queue Editor & Save Queue as Playlist):
+ * - Displays the Spotify-style FIFO Priority Queue ("Play Next") with Move Up/Down & Remove.
+ * - Displays the active upcoming Context Queue (Standard Queue when RND:OFF, Shuffle Pool when SHUFFLE)
+ *   with free modification (Move Up, Move Down, Remove, Clear) whenever Random != TRUE_RANDOM.
+ * - When Random == TRUE_RANDOM, clearly explains that True Random is memoryless on each track change.
+ * - Includes 1-tap "Save Queue as Playlist" conversion.
  */
 @Composable
 fun DualQueueBottomSheet(
     state: DualQueueEngine.EngineState,
+    onMovePriorityTrack: (Int, Int) -> Unit,
     onRemovePriorityIndex: (Int) -> Unit,
     onClearPriorityQueue: () -> Unit,
+    onMoveContextTrack: (Int, Int) -> Unit,
+    onRemoveContextIndex: (Int) -> Unit,
+    onClearContextQueue: () -> Unit,
     onSelectTrackFromStandard: (Track) -> Unit,
+    onSaveQueueAsPlaylist: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var showSavePlaylistPrompt by remember { mutableStateOf(false) }
+    var newPlaylistName by remember {
+        mutableStateOf(
+            state.activeContextName?.let { "Queue - $it" } ?: "Saved Queue"
+        )
+    }
+
+    val activeContextQueue = remember(state.randomMode, state.standardQueue, state.shufflePool) {
+        when (state.randomMode) {
+            RandomMode.OFF -> state.standardQueue
+            RandomMode.SHUFFLE_POOL -> state.shufflePool.ifEmpty { state.standardQueue }
+            RandomMode.TRUE_RANDOM -> emptyList()
+        }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            Text(
-                text = "Dual Playback Queue",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = "${formatRandomLabel(state.randomMode)} • ${formatLoopLabel(state.loopMode)}",
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                color = WinampLedGreen
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Dual Playback Queue",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${formatRandomLabel(state.randomMode)} • ${formatLoopLabel(state.loopMode)}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = WinampLedGreen
+                    )
+                }
+                OutlinedButton(
+                    onClick = { showSavePlaylistPrompt = !showSavePlaylistPrompt }
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.PlaylistAdd,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = "Save as Playlist",
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
+
+            if (showSavePlaylistPrompt) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newPlaylistName,
+                        onValueChange = { newPlaylistName = it },
+                        label = { Text("Playlist Name") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = {
+                            if (newPlaylistName.isNotBlank()) {
+                                onSaveQueueAsPlaylist(newPlaylistName.trim())
+                                showSavePlaylistPrompt = false
+                            }
+                        }
+                    ) {
+                        Text("Save", maxLines = 1, softWrap = false)
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -413,7 +496,7 @@ fun DualQueueBottomSheet(
                 )
             } else {
                 LazyColumn(
-                    modifier = Modifier.heightIn(max = 160.dp),
+                    modifier = Modifier.heightIn(max = 150.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     itemsIndexed(state.priorityQueue) { idx, track ->
@@ -422,7 +505,7 @@ fun DualQueueBottomSheet(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -440,7 +523,26 @@ fun DualQueueBottomSheet(
                                     overflow = TextOverflow.Ellipsis
                                 )
                             }
-                            IconButton(onClick = { onRemovePriorityIndex(idx) }) {
+                            IconButton(
+                                onClick = { if (idx > 0) onMovePriorityTrack(idx, idx - 1) },
+                                enabled = idx > 0,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up")
+                            }
+                            IconButton(
+                                onClick = {
+                                    if (idx < state.priorityQueue.lastIndex) onMovePriorityTrack(idx, idx + 1)
+                                },
+                                enabled = idx < state.priorityQueue.lastIndex,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down")
+                            }
+                            IconButton(
+                                onClick = { onRemovePriorityIndex(idx) },
+                                modifier = Modifier.size(30.dp)
+                            ) {
                                 Icon(Icons.Default.Delete, contentDescription = "Remove")
                             }
                         }
@@ -450,44 +552,107 @@ fun DualQueueBottomSheet(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-            Text(
-                text = "Standard Context Queue (${state.standardQueue.size} tracks)",
-                style = MaterialTheme.typography.labelLarge,
-                color = SamsungBlue
-            )
+            if (state.randomMode == RandomMode.TRUE_RANDOM) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(WinampAmberGold.copy(alpha = 0.14f))
+                        .border(1.dp, WinampAmberGold.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "True Random Active (Memoryless)",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = WinampAmberGold,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Upcoming context order is not fixed in True Random mode — each track change picks randomly from ${state.standardQueue.size} context tracks after draining the Priority Queue.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (state.randomMode == RandomMode.SHUFFLE_POOL) {
+                            "Shuffle Pool Queue (${activeContextQueue.size} tracks)"
+                        } else {
+                            "Standard Context Queue (${activeContextQueue.size} tracks)"
+                        },
+                        style = MaterialTheme.typography.labelLarge,
+                        color = SamsungBlue,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (activeContextQueue.size > 1) {
+                        TextButton(onClick = onClearContextQueue) {
+                            Text("Clear", maxLines = 1, softWrap = false)
+                        }
+                    }
+                }
 
-            LazyColumn(
-                modifier = Modifier.heightIn(max = 220.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                itemsIndexed(state.standardQueue) { idx, track ->
-                    val isCurrent = state.currentTrack?.filePath == track.filePath
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(
-                                if (isCurrent) SamsungBlue.copy(alpha = 0.25f)
-                                else Color.Transparent
-                            )
-                            .clickable { onSelectTrackFromStandard(track) }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "${idx + 1}. ${track.title}",
-                            modifier = Modifier.weight(1f),
-                            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isCurrent) WinampLedGreen else Color.White,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = track.audioQuality.format,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 11.sp,
-                            color = WinampAmberGold
-                        )
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 220.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    itemsIndexed(activeContextQueue) { idx, track ->
+                        val isCurrent = state.currentTrack?.filePath == track.filePath
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(
+                                    if (isCurrent) SamsungBlue.copy(alpha = 0.25f)
+                                    else Color.Transparent
+                                )
+                                .clickable { onSelectTrackFromStandard(track) }
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "${idx + 1}. ${track.title}",
+                                    fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isCurrent) WinampLedGreen else Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${track.artist} • ${track.audioQuality.format}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            IconButton(
+                                onClick = { if (idx > 0) onMoveContextTrack(idx, idx - 1) },
+                                enabled = idx > 0,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Move Up")
+                            }
+                            IconButton(
+                                onClick = {
+                                    if (idx < activeContextQueue.lastIndex) onMoveContextTrack(idx, idx + 1)
+                                },
+                                enabled = idx < activeContextQueue.lastIndex,
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Move Down")
+                            }
+                            IconButton(
+                                onClick = { onRemoveContextIndex(idx) },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Default.Delete, contentDescription = "Remove from Queue")
+                            }
+                        }
                     }
                 }
             }
@@ -498,10 +663,110 @@ fun DualQueueBottomSheet(
 }
 
 /**
+ * Dialog to add 1 or more tracks (Song, Album, or Folder) into an existing Playlist
+ * or create a new Playlist on the spot.
+ */
+@Composable
+fun AddToPlaylistDialog(
+    playlists: List<Playlist>,
+    candidateTracks: List<Track>,
+    onAddToExistingPlaylist: (Long, String) -> Unit,
+    onCreateNewPlaylistWithTracks: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var newName by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = "Add ${candidateTracks.size} Track(s) to Playlist",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newName,
+                        onValueChange = { newName = it },
+                        label = { Text("New Playlist Name") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Button(
+                        onClick = {
+                            if (newName.isNotBlank()) {
+                                onCreateNewPlaylistWithTracks(newName.trim())
+                            }
+                        }
+                    ) {
+                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Create", maxLines = 1, softWrap = false)
+                    }
+                }
+
+                if (playlists.isNotEmpty()) {
+                    HorizontalDivider()
+                    Text(
+                        text = "Or choose an existing playlist:",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = SamsungBlue
+                    )
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 220.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(playlists, key = { it.id }) { pl ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { onAddToExistingPlaylist(pl.id, pl.name) }
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = pl.name,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        text = "${pl.trackCount} tracks",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = WinampLedGreen
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
+}
+
+/**
  * Settings Dialog with:
  * 1. Phone Native Folder Picker (ACTION_OPEN_DOCUMENT_TREE) + collapsible manual path backup
- * 2. Track Artwork Display Customization (4 Now Playing styles + list thumbnail toggle)
- * 3. "Always scan entire phone for music" toggle (OFF by default)
+ * 2. HUD & Font Size Scale (0.85x Compact .. 1.00x Default .. 1.40x Extra Large)
+ * 3. Track Artwork Display Customization (4 Now Playing styles + list thumbnail toggle)
+ * 4. "Always scan entire phone for music" toggle (OFF by default)
  */
 @Composable
 fun SettingsDialog(
@@ -509,11 +774,13 @@ fun SettingsDialog(
     alwaysScanEntirePhone: Boolean,
     artworkStyle: NowPlayingArtworkStyle,
     showListTrackThumbnails: Boolean,
+    hudScale: Float,
     onLaunchNativeFolderPicker: () -> Unit,
     onSaveRootPath: (String) -> Unit,
     onToggleAlwaysScanEntirePhone: (Boolean) -> Unit,
     onSelectArtworkStyle: (NowPlayingArtworkStyle) -> Unit,
     onToggleListTrackThumbnails: (Boolean) -> Unit,
+    onHudScaleChanged: (Float) -> Unit,
     onRequestStoragePermissions: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -621,7 +888,54 @@ fun SettingsDialog(
 
                 HorizontalDivider()
 
-                // 3. Track Image / Artwork Customization
+                // 3. HUD & Font Size Scaling (Default 1.0x)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "HUD & Font Size Scale",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = WinampLedGreen,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = String.format(Locale.US, "%.2fx", hudScale) +
+                                if (kotlin.math.abs(hudScale - 1.0f) < 0.03f) " (Default)" else "",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        color = WinampAmberGold
+                    )
+                }
+                Slider(
+                    value = hudScale,
+                    onValueChange = { onHudScaleChanged(it) },
+                    valueRange = 0.85f..1.40f,
+                    steps = 10,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        0.85f to "0.85x",
+                        1.00f to "1.0x Default",
+                        1.15f to "1.15x",
+                        1.30f to "1.30x"
+                    ).forEach { (preset, label) ->
+                        FilterChip(
+                            selected = kotlin.math.abs(hudScale - preset) < 0.03f,
+                            onClick = { onHudScaleChanged(preset) },
+                            label = { Text(label, fontSize = 10.sp, maxLines = 1, softWrap = false) }
+                        )
+                    }
+                }
+
+                HorizontalDivider()
+
+                // 4. Track Image / Artwork Customization
                 Text(
                     text = "Track Artwork & Display Style",
                     style = MaterialTheme.typography.labelLarge,

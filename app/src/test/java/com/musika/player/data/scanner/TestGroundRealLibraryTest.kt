@@ -45,7 +45,8 @@ class TestGroundRealLibraryTest {
         repository = LibraryRepository(
             trackDao = db.trackDao(),
             folderDao = db.folderDao(),
-            webMetadataDao = db.webMetadataDao()
+            webMetadataDao = db.webMetadataDao(),
+            playlistDao = db.playlistDao()
         )
     }
 
@@ -287,5 +288,71 @@ class TestGroundRealLibraryTest {
         assertEquals(false, prefs.showListTrackThumbnails.value)
         prefs.setShowListTrackThumbnails(true)
         assertEquals(true, prefs.showListTrackThumbnails.value)
+
+        // HUD & Font Size Scale defaults to 1.0f and clamps within 0.85f..1.40f
+        assertEquals(1.0f, prefs.hudScale.value, 0.001f)
+        prefs.setHudScale(1.25f)
+        assertEquals(1.25f, prefs.hudScale.value, 0.001f)
+        prefs.setHudScale(1.0f)
+        assertEquals(1.0f, prefs.hudScale.value, 0.001f)
+    }
+
+    @Test
+    fun `playlists CRUD reordering and incremental scanner reuse work end-to-end`() = runBlocking {
+        val tempRoot = kotlin.io.path.createTempDirectory("musika_incremental_playlist_test").toFile()
+        try {
+            val artistDir = File(tempRoot, "Queen")
+            artistDir.mkdirs()
+            val f1 = File(artistDir, "01 - Bohemian Rhapsody.flac").apply { writeBytes(ByteArray(1024)) }
+            val f2 = File(artistDir, "02 - Killer Queen.flac").apply { writeBytes(ByteArray(1024)) }
+            val f3 = File(artistDir, "03 - Somebody to Love.flac").apply { writeBytes(ByteArray(1024)) }
+
+            val firstScan = repository.rescanLibrary(tempRoot)
+            assertEquals(3, firstScan.tracks.size)
+
+            // Second scan with unchanged timestamps reuses existing TrackEntities in O(1)
+            val secondScan = repository.rescanLibrary(tempRoot)
+            assertEquals(3, secondScan.tracks.size)
+            assertEquals(firstScan.tracks.map { it.filePath }, secondScan.tracks.map { it.filePath })
+
+            val songs = repository.getDeduplicatedSongsFlow(SongSortOption.ALPHABETICAL).first()
+                .map { it.primaryTrack }
+            assertEquals(3, songs.size)
+
+            // Create Playlist with initial 2 tracks
+            val playlistId = repository.createPlaylist("Rock Classics", listOf(songs[0], songs[1]))
+            assertTrue(playlistId > 0L)
+
+            var playlists = repository.getPlaylistsFlow().first()
+            assertEquals(1, playlists.size)
+            assertEquals("Rock Classics", playlists.first().name)
+            assertEquals(2, playlists.first().trackCount)
+
+            // Add 3rd track
+            repository.addTracksToPlaylist(playlistId, listOf(songs[2]))
+            var plTracks = repository.getTracksForPlaylistFlow(playlistId).first()
+            assertEquals(3, plTracks.size)
+
+            // Move track 2 (index 2) to top (index 0)
+            repository.moveTrackInPlaylist(playlistId, fromIndex = 2, toIndex = 0)
+            plTracks = repository.getTracksForPlaylistFlow(playlistId).first()
+            assertEquals(songs[2].filePath, plTracks[0].filePath)
+
+            // Remove middle track (index 1)
+            repository.removeTrackFromPlaylist(playlistId, positionIndex = 1)
+            plTracks = repository.getTracksForPlaylistFlow(playlistId).first()
+            assertEquals(2, plTracks.size)
+
+            // Rename and delete playlist
+            repository.renamePlaylist(playlistId, "Queen Favorites")
+            playlists = repository.getPlaylistsFlow().first()
+            assertEquals("Queen Favorites", playlists.first().name)
+
+            repository.deletePlaylist(playlistId)
+            playlists = repository.getPlaylistsFlow().first()
+            assertTrue(playlists.isEmpty())
+        } finally {
+            tempRoot.deleteRecursively()
+        }
     }
 }

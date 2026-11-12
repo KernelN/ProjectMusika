@@ -123,6 +123,12 @@ class SettingsPreferences(context: Context) {
     )
     val showListTrackThumbnails: StateFlow<Boolean> = _showListTrackThumbnails.asStateFlow()
 
+    // HUD & Font Size Scale (1.0f by default; supports 0.85f Compact up to 1.40f Extra Large)
+    private val _hudScale = MutableStateFlow(
+        prefs.getFloat(KEY_HUD_SCALE, 1.0f).coerceIn(0.85f, 1.40f)
+    )
+    val hudScale: StateFlow<Float> = _hudScale.asStateFlow()
+
     fun setMusicalRootPath(path: String) {
         val normalized = path.replace('\\', '/').trimEnd('/').ifEmpty { "/" }
         prefs.edit().putString(KEY_MUSICAL_ROOT_PATH, normalized).apply()
@@ -179,6 +185,12 @@ class SettingsPreferences(context: Context) {
         _showListTrackThumbnails.value = enabled
     }
 
+    fun setHudScale(scale: Float) {
+        val clamped = scale.coerceIn(0.85f, 1.40f)
+        prefs.edit().putFloat(KEY_HUD_SCALE, clamped).apply()
+        _hudScale.value = clamped
+    }
+
     fun resolveEffectiveScanRoot(): File {
         return if (_alwaysScanEntirePhone.value) {
             try {
@@ -204,6 +216,7 @@ class SettingsPreferences(context: Context) {
         const val KEY_FOLDER_SORT = "folder_sort"
         const val KEY_ARTWORK_STYLE = "artwork_style"
         const val KEY_SHOW_LIST_THUMBNAILS = "show_list_thumbnails"
+        const val KEY_HUD_SCALE = "hud_scale"
 
         /**
          * Resolves an Android native folder picker (ACTION_OPEN_DOCUMENT_TREE) Uri into an

@@ -37,7 +37,8 @@ class MainActivity : ComponentActivity() {
         LibraryRepository(
             trackDao = db.trackDao(),
             folderDao = db.folderDao(),
-            webMetadataDao = db.webMetadataDao()
+            webMetadataDao = db.webMetadataDao(),
+            playlistDao = db.playlistDao()
         )
     }
 
