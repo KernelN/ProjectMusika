@@ -63,6 +63,8 @@ import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.Playlist
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.Track
+import com.musika.player.core.sync.OnlineControlCoordinator
+import com.musika.player.core.sync.RemoteSyncContract
 import com.musika.player.data.metadata.MetadataWriteDialogState
 import com.musika.player.data.metadata.WriteConfirmationStep
 import com.musika.player.player.DualQueueEngine
@@ -1012,3 +1014,306 @@ fun SettingsDialog(
         }
     )
 }
+
+/**
+ * Stage 2: Online Device Control, Account Sync Mode & Metadata-Verified Playback Transfer Sheet.
+ * Supports:
+ * 1. Remote control of the currently playing device.
+ * 2. Switching between SYNCED_PLAYBACK (kept synchronized) and INDEPENDENT_CONCURRENT (2+ devices at the same time).
+ * 3. Moving active music from one device to another strictly when both devices have a song with matching metadata loaded.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun OnlineDeviceControlBottomSheet(
+    onlineState: OnlineControlCoordinator.OnlineControlState,
+    playbackState: DualQueueEngine.EngineState,
+    onSelectSyncMode: (RemoteSyncContract.AccountDeviceSyncMode) -> Unit,
+    onSendRemoteCommand: (RemoteSyncContract.SyncCommand, String) -> Unit,
+    onMirrorCatalogToDevice: (String) -> Unit,
+    onClearPeerCatalog: (String) -> Unit,
+    onTransferPlaybackToDevice: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val currentTrackDescriptor = playbackState.currentTrack?.let { track ->
+        RemoteSyncContract.RemoteTrackDescriptor.fromTrack(track)
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Online Multi-Device Control",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Account: ${onlineState.accountId} • Active Target: ${onlineState.activeControllingDeviceId}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WinampLedGreen,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            // 1. Account Sync vs. Independent Concurrent Mode Selector
+            Text(
+                text = "Account Multi-Device Playback Mode",
+                style = MaterialTheme.typography.labelLarge,
+                color = SamsungBlue,
+                fontWeight = FontWeight.Bold
+            )
+            RemoteSyncContract.AccountDeviceSyncMode.entries.forEach { mode ->
+                val isSelected = onlineState.syncMode == mode
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .border(
+                            1.dp,
+                            if (isSelected) SamsungBlue else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                            RoundedCornerShape(8.dp)
+                        )
+                        .background(
+                            if (isSelected) SamsungBlue.copy(alpha = 0.16f)
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                        .clickable { onSelectSyncMode(mode) }
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = isSelected,
+                        onClick = { onSelectSyncMode(mode) }
+                    )
+                    Column(modifier = Modifier.padding(start = 6.dp).weight(1f)) {
+                        Text(
+                            text = mode.displayName,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = mode.subtitle,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider()
+
+            // 2. Remote Transport Controls for Active Device
+            Text(
+                text = "Remote Control (${onlineState.activeControllingDeviceId})",
+                style = MaterialTheme.typography.labelLarge,
+                color = WinampAmberGold,
+                fontWeight = FontWeight.Bold
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        onSendRemoteCommand(
+                            RemoteSyncContract.SyncCommand.SkipPrevious,
+                            onlineState.activeControllingDeviceId
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Prev", maxLines = 1, softWrap = false)
+                }
+                Button(
+                    onClick = {
+                        val cmd = if (playbackState.isPlaying) {
+                            RemoteSyncContract.SyncCommand.Pause
+                        } else {
+                            RemoteSyncContract.SyncCommand.Play
+                        }
+                        onSendRemoteCommand(cmd, onlineState.activeControllingDeviceId)
+                    },
+                    modifier = Modifier.weight(1.3f)
+                ) {
+                    Text(
+                        text = if (playbackState.isPlaying) "Remote Pause" else "Remote Play",
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        onSendRemoteCommand(
+                            RemoteSyncContract.SyncCommand.SkipNext,
+                            onlineState.activeControllingDeviceId
+                        )
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Next", maxLines = 1, softWrap = false)
+                }
+            }
+
+            HorizontalDivider()
+
+            // 3. Connected Account Devices & Metadata-Verified Cross-Device Music Transfer
+            Text(
+                text = "Connected Account Devices & Music Transfer",
+                style = MaterialTheme.typography.labelLarge,
+                color = WinampLedGreen,
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = "Rule: Moving active music to another device is only allowed when both devices have a song with matching metadata loaded.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            onlineState.connectedDevices.forEach { device ->
+                val isActiveTarget = onlineState.activeControllingDeviceId == device.deviceId
+                val hasMetadataMatch = currentTrackDescriptor != null &&
+                        device.hasMatchingTrackMetadataLoaded(currentTrackDescriptor)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .border(
+                            width = 1.dp,
+                            color = if (isActiveTarget) WinampLedGreen else SamsungBlue.copy(alpha = 0.4f),
+                            shape = RoundedCornerShape(10.dp)
+                        )
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "${device.deviceName} (${device.deviceType})",
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = "ID: ${device.deviceId} • Loaded Tracks: ${device.loadedTrackKeys.size}",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = if (isActiveTarget) WinampLedGreen else WinampAmberGold
+                            )
+                        }
+                        if (isActiveTarget) {
+                            Text(
+                                text = "PLAYING HERE",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = WinampLedGreen
+                            )
+                        }
+                    }
+
+                    if (currentTrackDescriptor != null) {
+                        Text(
+                            text = if (hasMetadataMatch) {
+                                "Metadata Verified: '${currentTrackDescriptor.title}' is loaded on this device"
+                            } else {
+                                "Missing Metadata Match: '${currentTrackDescriptor.title}' is NOT loaded on this device"
+                            },
+                            fontSize = 11.sp,
+                            color = if (hasMetadataMatch) WinampLedGreen else WinampAmberGold
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (device.deviceId != onlineState.localDeviceId) {
+                            OutlinedButton(
+                                onClick = {
+                                    if (device.loadedTrackKeys.isEmpty()) {
+                                        onMirrorCatalogToDevice(device.deviceId)
+                                    } else {
+                                        onClearPeerCatalog(device.deviceId)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text(
+                                    text = if (device.loadedTrackKeys.isEmpty()) {
+                                        "Sync Catalog Metadata"
+                                    } else {
+                                        "Clear Peer Metadata"
+                                    },
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = { onTransferPlaybackToDevice(device.deviceId) },
+                            enabled = currentTrackDescriptor != null,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "Move Music Here",
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            onlineState.lastTransferResult?.let { transferResult ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (transferResult.allowed) WinampLedGreen.copy(alpha = 0.15f)
+                            else WinampAmberGold.copy(alpha = 0.15f)
+                        )
+                        .padding(10.dp)
+                ) {
+                    Text(
+                        text = if (transferResult.allowed) "Transfer Succeeded" else "Transfer Blocked (Metadata Guard)",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = if (transferResult.allowed) WinampLedGreen else WinampAmberGold
+                    )
+                    Text(
+                        text = transferResult.reason,
+                        fontSize = 11.sp,
+                        color = Color.White
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+

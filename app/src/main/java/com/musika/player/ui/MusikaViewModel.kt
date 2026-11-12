@@ -16,6 +16,7 @@ import com.musika.player.core.model.Playlist
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
+import com.musika.player.core.sync.OnlineControlCoordinator
 import com.musika.player.core.sync.RemoteSyncContract
 import com.musika.player.data.local.entity.WebMetadataEntity
 import com.musika.player.data.metadata.ConfirmationScope
@@ -73,6 +74,13 @@ class MusikaViewModel(
     )
 
     val playbackState: StateFlow<DualQueueEngine.EngineState> = dualQueueEngine.state
+
+    val onlineControlCoordinator = OnlineControlCoordinator(localEngine = dualQueueEngine)
+    val onlineControlState: StateFlow<OnlineControlCoordinator.OnlineControlState> =
+        onlineControlCoordinator.state
+
+    private val _showOnlineControlSheet = MutableStateFlow(false)
+    val showOnlineControlSheet: StateFlow<Boolean> = _showOnlineControlSheet.asStateFlow()
 
     private val _selectedTab = MutableStateFlow(MusikaTab.SONGS)
     val selectedTab: StateFlow<MusikaTab> = _selectedTab.asStateFlow()
@@ -626,8 +634,54 @@ class MusikaViewModel(
     }
 
     // =========================================================================
-    // STAGE 2 DESKTOP SYNC CONTRACT SERIALIZATION
+    // STAGE 2 ONLINE CONTROL, ACCOUNT SYNC MODE & METADATA-VERIFIED HAND-OFF
     // =========================================================================
+
+    fun setShowOnlineControlSheet(visible: Boolean) {
+        _showOnlineControlSheet.value = visible
+    }
+
+    fun setAccountDeviceSyncMode(mode: RemoteSyncContract.AccountDeviceSyncMode) {
+        onlineControlCoordinator.setAccountSyncMode(mode)
+    }
+
+    fun sendRemoteControlCommand(
+        command: RemoteSyncContract.SyncCommand,
+        targetDeviceId: String
+    ) {
+        val allTracks = deduplicatedSongs.value.map { it.primaryTrack }
+        onlineControlCoordinator.sendRemoteCommand(
+            command = command,
+            localLibrary = allTracks,
+            targetDeviceId = targetDeviceId
+        )
+    }
+
+    fun mirrorCatalogToPeerDevice(targetDeviceId: String) {
+        val allTracks = deduplicatedSongs.value.map { it.primaryTrack }
+        onlineControlCoordinator.mirrorLocalCatalogToPeerDevice(
+            targetDeviceId = targetDeviceId,
+            localTracks = allTracks
+        )
+        _statusBannerMessage.value =
+            "Synced ${allTracks.size} track metadata keys with peer device '$targetDeviceId'"
+    }
+
+    fun clearPeerDeviceCatalog(targetDeviceId: String) {
+        onlineControlCoordinator.mirrorLocalCatalogToPeerDevice(
+            targetDeviceId = targetDeviceId,
+            localTracks = emptyList()
+        )
+        _statusBannerMessage.value =
+            "Cleared loaded metadata on peer device '$targetDeviceId'"
+    }
+
+    fun transferPlaybackToDevice(targetDeviceId: String): RemoteSyncContract.PlaybackTransferResult {
+        val allTracks = deduplicatedSongs.value.map { it.primaryTrack }
+        val result = onlineControlCoordinator.transferPlaybackToDevice(targetDeviceId, allTracks)
+        _statusBannerMessage.value = result.reason
+        return result
+    }
 
     fun exportRemoteSyncSnapshotJson(lanHost: String? = null): String {
         return RemoteSyncContract.serializeSnapshot(dualQueueEngine.toPlaybackSnapshot(lanHost))

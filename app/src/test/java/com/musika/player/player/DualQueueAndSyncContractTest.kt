@@ -4,9 +4,11 @@ import com.musika.player.core.model.AudioQuality
 import com.musika.player.core.model.LoopMode
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.Track
+import com.musika.player.core.sync.OnlineControlCoordinator
 import com.musika.player.core.sync.RemoteSyncContract
 import kotlin.random.Random
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -178,6 +180,99 @@ class DualQueueAndSyncContractTest {
         engine.setRandomMode(RandomMode.TRUE_RANDOM)
         assertEquals(false, engine.isContextQueueModifiable())
         assertTrue(engine.getVisibleContextQueue().isEmpty())
+    }
+
+    @Test
+    fun `stage2 online control supports remote transport sync modes and strictly gates playback transfer on matching metadata`() {
+        val engine = DualQueueEngine(
+            initialRandomMode = RandomMode.OFF,
+            initialLoopMode = LoopMode.NO_LOOP
+        )
+        val allTracks = listOf(song1, song2, song3, song4)
+        engine.playFromContext(song1, listOf(song1, song2, song3), "Album X")
+        engine.seekTo(45_000L)
+
+        val coordinator = OnlineControlCoordinator(
+            localEngine = engine,
+            localDeviceId = "android-phone",
+            localDeviceName = "This Android Phone"
+        )
+
+        // 1. Default mode is SYNCED_PLAYBACK; can switch to INDEPENDENT_CONCURRENT (2 devices at the same time)
+        assertEquals(
+            RemoteSyncContract.AccountDeviceSyncMode.SYNCED_PLAYBACK,
+            coordinator.state.value.syncMode
+        )
+        coordinator.setAccountSyncMode(
+            RemoteSyncContract.AccountDeviceSyncMode.INDEPENDENT_CONCURRENT
+        )
+        assertEquals(
+            RemoteSyncContract.AccountDeviceSyncMode.INDEPENDENT_CONCURRENT,
+            coordinator.state.value.syncMode
+        )
+
+        // 2. Remote control commands target the active device
+        assertTrue(engine.state.value.isPlaying)
+        coordinator.sendRemoteCommand(
+            command = RemoteSyncContract.SyncCommand.Pause,
+            localLibrary = allTracks,
+            targetDeviceId = "android-phone"
+        )
+        assertFalse(engine.state.value.isPlaying)
+
+        coordinator.sendRemoteCommand(
+            command = RemoteSyncContract.SyncCommand.Play,
+            localLibrary = allTracks,
+            targetDeviceId = "android-phone"
+        )
+        assertTrue(engine.state.value.isPlaying)
+
+        // 3. Attempting to move music to "desktop-winamp-workstation" BEFORE desktop has matching metadata loaded MUST FAIL
+        val blockedResult = coordinator.transferPlaybackToDevice(
+            targetDeviceId = "desktop-winamp-workstation",
+            localLibrary = allTracks
+        )
+        assertFalse(
+            "Playback transfer MUST be rejected when target device lacks matching track metadata",
+            blockedResult.allowed
+        )
+        assertEquals("android-phone", coordinator.state.value.activeControllingDeviceId)
+        assertTrue("Source device must continue playing when transfer is rejected", engine.state.value.isPlaying)
+
+        // 4. Populate "desktop-winamp-workstation" with a different song only (song4) -> transfer of song1 MUST STILL FAIL
+        coordinator.mirrorLocalCatalogToPeerDevice(
+            targetDeviceId = "desktop-winamp-workstation",
+            localTracks = listOf(song4)
+        )
+        val stillBlocked = coordinator.transferPlaybackToDevice(
+            targetDeviceId = "desktop-winamp-workstation",
+            localLibrary = allTracks
+        )
+        assertFalse(
+            "Playback transfer MUST be rejected when peer device only has non-matching songs loaded",
+            stillBlocked.allowed
+        )
+
+        // 5. Populate "desktop-winamp-workstation" with matching metadata for song1 -> transfer MUST SUCCEED
+        coordinator.mirrorLocalCatalogToPeerDevice(
+            targetDeviceId = "desktop-winamp-workstation",
+            localTracks = listOf(song1, song2, song3)
+        )
+        val allowedResult = coordinator.transferPlaybackToDevice(
+            targetDeviceId = "desktop-winamp-workstation",
+            localLibrary = allTracks
+        )
+        assertTrue(
+            "Playback transfer MUST succeed when both devices have a song with matching metadata loaded",
+            allowedResult.allowed
+        )
+        assertEquals("desktop-winamp-workstation", coordinator.state.value.activeControllingDeviceId)
+        assertNotNull(allowedResult.transferredTrack)
+        assertEquals(song1.title, allowedResult.transferredTrack?.title)
+        assertFalse(
+            "Source device pauses local output after handing off active playback to peer device",
+            engine.state.value.isPlaying
+        )
     }
 
     private fun makeTrack(title: String, artist: String, album: String, trackNum: Int): Track {

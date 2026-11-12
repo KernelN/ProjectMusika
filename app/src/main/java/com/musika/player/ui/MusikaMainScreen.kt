@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Album
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Equalizer
 import androidx.compose.material.icons.filled.Folder
@@ -117,6 +118,7 @@ import com.musika.player.ui.components.FormatVariantPickerDialog
 import com.musika.player.ui.components.MetadataWriteConfirmationDialog
 import com.musika.player.ui.components.MultiFolderBottomSheet
 import com.musika.player.ui.components.NowPlayingScreenOverlay
+import com.musika.player.ui.components.OnlineDeviceControlBottomSheet
 import com.musika.player.ui.components.SettingsDialog
 import com.musika.player.ui.components.WinampMiniPlayerBar
 import com.musika.player.ui.components.formatLoopLabel
@@ -193,6 +195,8 @@ fun MusikaMainScreen(
     val writeConfirmationState by viewModel.writeConfirmationDialogState.collectAsState()
     val showNowPlayingOverlay by viewModel.showNowPlayingOverlay.collectAsState()
     val showQueueSheet by viewModel.showQueueSheet.collectAsState()
+    val showOnlineControlSheet by viewModel.showOnlineControlSheet.collectAsState()
+    val onlineControlState by viewModel.onlineControlState.collectAsState()
     val showSettingsDialog by viewModel.showSettingsDialog.collectAsState()
     val musicalRootPath by viewModel.musicalRootPath.collectAsState()
     val alwaysScanEntirePhone by viewModel.alwaysScanEntirePhone.collectAsState()
@@ -229,6 +233,7 @@ fun MusikaMainScreen(
         when {
             showNowPlayingOverlay -> viewModel.setShowNowPlayingOverlay(false)
             showQueueSheet -> viewModel.setShowQueueSheet(false)
+            showOnlineControlSheet -> viewModel.setShowOnlineControlSheet(false)
             addToPlaylistCandidates != null -> viewModel.dismissAddToPlaylistDialog()
             multiFolderSheetState != null -> viewModel.dismissMultiFolderSheet()
             variantPickerGroup != null -> viewModel.dismissFormatVariantPicker()
@@ -351,6 +356,13 @@ fun MusikaMainScreen(
                                     )
                                 }
 
+                                IconButton(onClick = { viewModel.setShowOnlineControlSheet(true) }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Devices,
+                                        contentDescription = "Online Multi-Device Control",
+                                        tint = WinampLedGreen
+                                    )
+                                }
                                 IconButton(onClick = { viewModel.triggerLibraryScan() }) {
                                     Icon(Icons.Default.Refresh, contentDescription = "Rescan Root Folder")
                                 }
@@ -705,6 +717,21 @@ fun MusikaMainScreen(
                     },
                     onSaveQueueAsPlaylist = viewModel::saveCurrentQueueAsPlaylist,
                     onDismiss = { viewModel.setShowQueueSheet(false) }
+                )
+            }
+
+            if (showOnlineControlSheet) {
+                OnlineDeviceControlBottomSheet(
+                    onlineState = onlineControlState,
+                    playbackState = playbackState,
+                    onSelectSyncMode = viewModel::setAccountDeviceSyncMode,
+                    onSendRemoteCommand = viewModel::sendRemoteControlCommand,
+                    onMirrorCatalogToDevice = viewModel::mirrorCatalogToPeerDevice,
+                    onClearPeerCatalog = viewModel::clearPeerDeviceCatalog,
+                    onTransferPlaybackToDevice = { deviceId ->
+                        viewModel.transferPlaybackToDevice(deviceId)
+                    },
+                    onDismiss = { viewModel.setShowOnlineControlSheet(false) }
                 )
             }
 

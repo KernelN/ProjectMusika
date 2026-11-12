@@ -601,24 +601,36 @@ class DualQueueEngine(
                 playFromContext(matchedPrimary, matchedContext, "Remote Sync")
             }
             is RemoteSyncContract.SyncCommand.StateUpdate -> {
-                val snap = command.snapshot
-                setRandomMode(snap.randomMode)
-                setLoopMode(snap.loopMode)
-                val matchedCurrent = snap.currentTrack?.let { resolveRemoteDescriptor(it, localLibrary) }
-                val matchedPriority = snap.priorityQueue.map { resolveRemoteDescriptor(it, localLibrary) }
-                val matchedStandard = snap.standardQueue.map { resolveRemoteDescriptor(it, localLibrary) }
-                _state.value = _state.value.copy(
-                    currentTrack = matchedCurrent,
-                    isPlaying = snap.isPlaying,
-                    positionMs = snap.positionMs,
-                    priorityQueue = matchedPriority,
-                    standardQueue = matchedStandard,
-                    activeContextName = snap.activeContextName
-                )
-                if (matchedCurrent != null) {
-                    playbackDriver?.onLoadAndPlayTrack(matchedCurrent, snap.positionMs, snap.isPlaying)
-                }
+                applyRemoteSnapshot(command.snapshot, localLibrary)
             }
+            is RemoteSyncContract.SyncCommand.SetAccountSyncMode -> {
+                // Handled at OnlineControlCoordinator level
+            }
+            is RemoteSyncContract.SyncCommand.TransferPlayback -> {
+                applyRemoteSnapshot(command.snapshot, localLibrary)
+            }
+        }
+    }
+
+    private fun applyRemoteSnapshot(
+        snap: RemoteSyncContract.PlaybackSnapshot,
+        localLibrary: List<Track>
+    ) {
+        setRandomMode(snap.randomMode)
+        setLoopMode(snap.loopMode)
+        val matchedCurrent = snap.currentTrack?.let { resolveRemoteDescriptor(it, localLibrary) }
+        val matchedPriority = snap.priorityQueue.map { resolveRemoteDescriptor(it, localLibrary) }
+        val matchedStandard = snap.standardQueue.map { resolveRemoteDescriptor(it, localLibrary) }
+        _state.value = _state.value.copy(
+            currentTrack = matchedCurrent,
+            isPlaying = snap.isPlaying,
+            positionMs = snap.positionMs,
+            priorityQueue = matchedPriority,
+            standardQueue = matchedStandard,
+            activeContextName = snap.activeContextName
+        )
+        if (matchedCurrent != null) {
+            playbackDriver?.onLoadAndPlayTrack(matchedCurrent, snap.positionMs, snap.isPlaying)
         }
     }
 
