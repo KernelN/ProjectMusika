@@ -28,6 +28,9 @@ interface FolderDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertFolders(folders: List<FolderEntity>)
 
+    @Query("DELETE FROM folders WHERE absolutePath IN (:paths)")
+    suspend fun deleteFoldersByPaths(paths: List<String>)
+
     @Query("DELETE FROM folders")
     suspend fun clearAll()
 }

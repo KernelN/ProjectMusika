@@ -6,6 +6,8 @@ import com.musika.player.data.local.entity.FolderEntity
 import com.musika.player.data.local.entity.TrackEntity
 import java.io.File
 import java.util.Locale
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -28,9 +30,16 @@ object MusicalRootScanner {
 
     private val json = Json { encodeDefaults = true }
 
+    private data class DiscoveredAudioFile(
+        val file: File,
+        val normalizedFilePath: String,
+        val parentFolderPath: String
+    )
+
     fun scan(
         musicalRootFolder: File,
-        existingPendingWebPaths: Set<String> = emptySet()
+        existingPendingWebPaths: Set<String> = emptySet(),
+        existingTracksByPath: Map<String, TrackEntity> = emptyMap()
     ): ScanResult {
         if (!musicalRootFolder.exists() || !musicalRootFolder.isDirectory) {
             return ScanResult(
@@ -43,7 +52,7 @@ object MusicalRootScanner {
         val rootAbsolutePath = normalizePath(musicalRootFolder.absolutePath)
         AudioMetadataParser.clearFolderArtworkMemoCache()
         val visitedCanonicalPaths = mutableSetOf<String>()
-        val discoveredTracks = mutableListOf<TrackEntity>()
+        val discoveredFiles = mutableListOf<DiscoveredAudioFile>()
         val directTrackCounts = LinkedHashMap<String, Int>()
         val childrenMap = LinkedHashMap<String, MutableList<String>>()
         val parentMap = LinkedHashMap<String, String?>()
@@ -71,51 +80,24 @@ object MusicalRootScanner {
                 null
             } ?: emptyArray()
 
-            val childAudioTracks = mutableListOf<TrackEntity>()
             for (entry in children) {
                 if (entry.name.startsWith(".")) continue
                 if (entry.isDirectory) {
                     subDirs.add(entry)
                 } else if (AudioMetadataParser.isSupportedAudioFile(entry)) {
                     directAudioCount++
-                    val parsed = AudioMetadataParser.parse(entry)
                     val trackFilePath = normalizePath(entry.absolutePath)
-                    val relTrackPath = computeRelativePath(rootAbsolutePath, trackFilePath)
-                    val normKey = "${parsed.artist.trim().lowercase(Locale.US)}|${parsed.album.trim().lowercase(Locale.US)}|${parsed.title.trim().lowercase(Locale.US)}"
-
-                    childAudioTracks.add(
-                        TrackEntity(
-                            filePath = trackFilePath,
-                            relativePath = relTrackPath,
-                            fileName = entry.name,
-                            fileExtension = entry.extension.lowercase(Locale.US),
-                            title = parsed.title,
-                            artist = parsed.artist,
-                            album = parsed.album,
-                            albumArtist = parsed.albumArtist,
-                            discNumber = parsed.discNumber,
-                            totalDiscs = parsed.totalDiscs,
-                            trackNumber = parsed.trackNumber,
-                            durationMs = parsed.durationMs,
-                            format = parsed.audioQuality.format,
-                            bitrateKbps = parsed.audioQuality.bitrateKbps,
-                            sampleRateHz = parsed.audioQuality.sampleRateHz,
-                            bitDepth = parsed.audioQuality.bitDepth,
-                            isLossless = parsed.audioQuality.isLossless,
-                            parentFolderPath = dirPath,
-                            dateAdded = entry.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
-                            year = parsed.year,
-                            genre = parsed.genre,
-                            artworkUri = parsed.artworkUri,
-                            normalizedKey = normKey,
-                            webMatchPending = trackFilePath in existingPendingWebPaths
+                    discoveredFiles.add(
+                        DiscoveredAudioFile(
+                            file = entry,
+                            normalizedFilePath = trackFilePath,
+                            parentFolderPath = dirPath
                         )
                     )
                 }
             }
 
             directTrackCounts[dirPath] = directAudioCount
-            discoveredTracks.addAll(childAudioTracks)
 
             val childPaths = mutableListOf<String>()
             for (subDir in subDirs) {
@@ -127,6 +109,66 @@ object MusicalRootScanner {
         }
 
         traverse(musicalRootFolder, parentPath = null)
+
+        // Separate unchanged files (O(1) reuse) from new/modified files (parallel multi-core header parse)
+        val discoveredTracks = ArrayList<TrackEntity>(discoveredFiles.size)
+        val uncachedIndexedFiles = mutableListOf<Pair<Int, DiscoveredAudioFile>>()
+        val resultSlots = arrayOfNulls<TrackEntity>(discoveredFiles.size)
+
+        for (i in discoveredFiles.indices) {
+            val item = discoveredFiles[i]
+            val existing = existingTracksByPath[item.normalizedFilePath]
+            val fileLastModified = item.file.lastModified()
+            if (existing != null && existing.dateAdded == fileLastModified && existing.durationMs > 0L) {
+                val relTrackPath = computeRelativePath(rootAbsolutePath, item.normalizedFilePath)
+                resultSlots[i] = existing.copy(
+                    relativePath = relTrackPath,
+                    parentFolderPath = item.parentFolderPath,
+                    webMatchPending = item.normalizedFilePath in existingPendingWebPaths
+                )
+            } else {
+                uncachedIndexedFiles.add(i to item)
+            }
+        }
+
+        if (uncachedIndexedFiles.isNotEmpty()) {
+            val workerCount = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+            if (uncachedIndexedFiles.size <= 8 || workerCount <= 1) {
+                for ((idx, item) in uncachedIndexedFiles) {
+                    resultSlots[idx] = parseAudioFileToEntity(
+                        item = item,
+                        rootAbsolutePath = rootAbsolutePath,
+                        existingPendingWebPaths = existingPendingWebPaths
+                    )
+                }
+            } else {
+                val pool = Executors.newFixedThreadPool(workerCount)
+                try {
+                    val tasks = uncachedIndexedFiles.map { (idx, item) ->
+                        Callable {
+                            idx to parseAudioFileToEntity(
+                                item = item,
+                                rootAbsolutePath = rootAbsolutePath,
+                                existingPendingWebPaths = existingPendingWebPaths
+                            )
+                        }
+                    }
+                    val futures = pool.invokeAll(tasks)
+                    for (future in futures) {
+                        val (idx, entity) = future.get()
+                        resultSlots[idx] = entity
+                    }
+                } finally {
+                    pool.shutdown()
+                }
+            }
+        }
+
+        for (slot in resultSlots) {
+            if (slot != null) {
+                discoveredTracks.add(slot)
+            }
+        }
 
         // Compute recursiveTrackCount bottom-up (post-order memoized) across the entire subfolder branch
         val recursiveCounts = HashMap<String, Int>()
@@ -196,6 +238,45 @@ object MusicalRootScanner {
             rootPath = rootAbsolutePath,
             tracks = updatedTracks,
             folders = folderEntities
+        )
+    }
+
+    private fun parseAudioFileToEntity(
+        item: DiscoveredAudioFile,
+        rootAbsolutePath: String,
+        existingPendingWebPaths: Set<String>
+    ): TrackEntity {
+        val entry = item.file
+        val parsed = AudioMetadataParser.parse(entry)
+        val trackFilePath = item.normalizedFilePath
+        val relTrackPath = computeRelativePath(rootAbsolutePath, trackFilePath)
+        val normKey = "${parsed.artist.trim().lowercase(Locale.US)}|${parsed.album.trim().lowercase(Locale.US)}|${parsed.title.trim().lowercase(Locale.US)}"
+
+        return TrackEntity(
+            filePath = trackFilePath,
+            relativePath = relTrackPath,
+            fileName = entry.name,
+            fileExtension = entry.extension.lowercase(Locale.US),
+            title = parsed.title,
+            artist = parsed.artist,
+            album = parsed.album,
+            albumArtist = parsed.albumArtist,
+            discNumber = parsed.discNumber,
+            totalDiscs = parsed.totalDiscs,
+            trackNumber = parsed.trackNumber,
+            durationMs = parsed.durationMs,
+            format = parsed.audioQuality.format,
+            bitrateKbps = parsed.audioQuality.bitrateKbps,
+            sampleRateHz = parsed.audioQuality.sampleRateHz,
+            bitDepth = parsed.audioQuality.bitDepth,
+            isLossless = parsed.audioQuality.isLossless,
+            parentFolderPath = item.parentFolderPath,
+            dateAdded = entry.lastModified().takeIf { it > 0 } ?: System.currentTimeMillis(),
+            year = parsed.year,
+            genre = parsed.genre,
+            artworkUri = parsed.artworkUri,
+            normalizedKey = normKey,
+            webMatchPending = trackFilePath in existingPendingWebPaths
         )
     }
 

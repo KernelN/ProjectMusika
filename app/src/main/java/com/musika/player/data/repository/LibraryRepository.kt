@@ -7,12 +7,16 @@ import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.DeduplicatedTrackGroup
 import com.musika.player.core.model.FolderNode
 import com.musika.player.core.model.FolderSortOption
+import com.musika.player.core.model.Playlist
 import com.musika.player.core.model.SongSortOption
 import com.musika.player.core.model.Track
 import com.musika.player.data.local.dao.FolderDao
+import com.musika.player.data.local.dao.PlaylistDao
 import com.musika.player.data.local.dao.TrackDao
 import com.musika.player.data.local.dao.WebMetadataDao
 import com.musika.player.data.local.entity.FolderEntity
+import com.musika.player.data.local.entity.PlaylistEntity
+import com.musika.player.data.local.entity.PlaylistEntryEntity
 import com.musika.player.data.local.entity.TrackEntity
 import com.musika.player.data.local.entity.WebMetadataEntity
 import com.musika.player.data.metadata.ConfirmationScope
@@ -27,43 +31,83 @@ import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 
 /**
  * Central Clean-Architecture Repository coordinating:
- * - Scoped Musical Root Folder scanning
+ * - Scoped Musical Root Folder scanning (with incremental O(1) reuse + multi-core cold parsing)
  * - Smart Format Deduplication in Songs, Albums, and Artists views (and raw files in Directory View)
  * - Multi-Disc recognition & sibling disc folder discovery
  * - Bidirectional cross-navigation (Song <-> Album <-> Artist <-> Folder)
+ * - Playlists CRUD, reordering, and Queue-to-Playlist conversion
  * - On-demand web metadata fetching & multi-step local file write confirmation enforcement
  */
 class LibraryRepository(
     private val trackDao: TrackDao,
     private val folderDao: FolderDao,
-    private val webMetadataDao: WebMetadataDao
+    private val webMetadataDao: WebMetadataDao,
+    private val playlistDao: PlaylistDao? = null
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
      * Performs a recursive scan strictly starting at [rootFolder].
+     * Reuses unchanged TrackEntities in O(1) and upserts in chunks without wiping existing Room rows first,
+     * eliminating startup freezes and unnecessary full re-parses.
      */
     suspend fun rescanLibrary(rootFolder: File): MusicalRootScanner.ScanResult = withContext(Dispatchers.IO) {
-        val pendingPaths = trackDao.getAllTracksSnapshot()
+        val existingTracks = trackDao.getAllTracksSnapshot()
+        val existingByPath = existingTracks.associateBy { it.filePath }
+        val pendingPaths = existingTracks
             .filter { it.webMatchPending }
             .map { it.filePath }
             .toSet()
 
-        val result = MusicalRootScanner.scan(rootFolder, pendingPaths)
-        trackDao.clearAll()
-        folderDao.clearAll()
-        if (result.tracks.isNotEmpty()) {
-            trackDao.insertTracks(result.tracks)
+        val result = MusicalRootScanner.scan(
+            musicalRootFolder = rootFolder,
+            existingPendingWebPaths = pendingPaths,
+            existingTracksByPath = existingByPath
+        )
+
+        if (result.tracks.isEmpty()) {
+            trackDao.clearAll()
+            folderDao.clearAll()
+            return@withContext result
         }
-        if (result.folders.isNotEmpty()) {
-            folderDao.insertFolders(result.folders)
+
+        val activeTrackPaths = result.tracks.map { it.filePath }.toHashSet()
+        val staleTrackPaths = existingByPath.keys.filter { it !in activeTrackPaths }
+        for (chunk in staleTrackPaths.chunked(500)) {
+            trackDao.deleteTracksByPaths(chunk)
         }
+
+        // Only insert/replace tracks that are new or whose metadata/timestamp changed
+        val tracksToUpsert = result.tracks.filter { scanned ->
+            existingByPath[scanned.filePath] != scanned
+        }
+        for (chunk in tracksToUpsert.chunked(500)) {
+            trackDao.insertTracks(chunk)
+        }
+
+        val existingFolders = folderDao.getAllFolders().associateBy { it.absolutePath }
+        val activeFolderPaths = result.folders.map { it.absolutePath }.toHashSet()
+        val staleFolderPaths = existingFolders.keys.filter { it !in activeFolderPaths }
+        for (chunk in staleFolderPaths.chunked(500)) {
+            folderDao.deleteFoldersByPaths(chunk)
+        }
+
+        val foldersToUpsert = result.folders.filter { scanned ->
+            existingFolders[scanned.absolutePath] != scanned
+        }
+        for (chunk in foldersToUpsert.chunked(500)) {
+            folderDao.insertFolders(chunk)
+        }
+
         result
     }
 
@@ -100,7 +144,7 @@ class LibraryRepository(
                     if (cmp != 0) cmp else a.primaryTrack.title.lowercase(Locale.US).compareTo(b.primaryTrack.title.lowercase(Locale.US))
                 }
             }
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -171,7 +215,7 @@ class LibraryRepository(
                     }
                     .map { it.album }
             }
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -224,7 +268,7 @@ class LibraryRepository(
                     }
                     .map { it.artist }
             }
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -238,7 +282,7 @@ class LibraryRepository(
                     .thenBy { it.primaryTrack.trackNumber }
                     .thenBy { it.primaryTrack.title.lowercase(Locale.US) }
             )
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -252,7 +296,7 @@ class LibraryRepository(
                     .thenBy { it.primaryTrack.discNumber }
                     .thenBy { it.primaryTrack.trackNumber }
             )
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     /**
@@ -271,7 +315,7 @@ class LibraryRepository(
         return daoFlow.map { entities ->
             val nodes = entities.map { it.toDomainNode() }
             MusicalRootScanner.sortFolders(nodes, sortOption)
-        }
+        }.flowOn(Dispatchers.Default)
     }
 
     suspend fun getFolderNode(folderPath: String): FolderNode? {
@@ -286,6 +330,119 @@ class LibraryRepository(
         val normPath = MusicalRootScanner.normalizePath(folderPath)
         return trackDao.getTracksInFolder(normPath).map { entities ->
             FormatDeduplicator.rawTracksForDirectoryView(entities.map { it.toDomainModel() })
+        }.flowOn(Dispatchers.Default)
+    }
+
+    // -------------------------------------------------------------------------
+    // Playlists CRUD, Reordering & Queue-to-Playlist Conversion
+    // -------------------------------------------------------------------------
+
+    fun getPlaylistsFlow(): Flow<List<Playlist>> {
+        val dao = playlistDao ?: return flowOf(emptyList())
+        return combine(
+            dao.getAllPlaylistsFlow(),
+            dao.getAllPlaylistEntriesFlow(),
+            trackDao.getAllTracksAlphabetical()
+        ) { playlistEntities, entryEntities, trackEntities ->
+            val tracksByPath = trackEntities.associate { it.filePath to it.toDomainModel() }
+            val entriesByPlaylist = entryEntities.groupBy { it.playlistId }
+            playlistEntities.map { pl ->
+                val orderedTracks = entriesByPlaylist[pl.id]
+                    .orEmpty()
+                    .sortedBy { it.positionIndex }
+                    .mapNotNull { entry -> tracksByPath[entry.trackFilePath] }
+                Playlist(
+                    id = pl.id,
+                    name = pl.name,
+                    trackCount = orderedTracks.size,
+                    totalDurationMs = orderedTracks.sumOf { it.durationMs },
+                    artworkUri = orderedTracks.firstNotNullOfOrNull { it.artworkUri },
+                    trackFilePaths = orderedTracks.map { it.filePath },
+                    createdAt = pl.createdAt
+                )
+            }
+        }.flowOn(Dispatchers.Default)
+    }
+
+    fun getTracksForPlaylistFlow(playlistId: Long): Flow<List<Track>> {
+        val dao = playlistDao ?: return flowOf(emptyList())
+        return combine(
+            dao.getEntriesForPlaylistFlow(playlistId),
+            trackDao.getAllTracksAlphabetical()
+        ) { entries, trackEntities ->
+            val tracksByPath = trackEntities.associate { it.filePath to it.toDomainModel() }
+            entries.sortedBy { it.positionIndex }.mapNotNull { entry ->
+                tracksByPath[entry.trackFilePath]
+            }
+        }.flowOn(Dispatchers.Default)
+    }
+
+    suspend fun createPlaylist(name: String, initialTracks: List<Track> = emptyList()): Long =
+        withContext(Dispatchers.IO) {
+            val dao = playlistDao ?: return@withContext -1L
+            val trimmed = name.trim().ifEmpty { "New Playlist" }
+            val playlistId = dao.insertPlaylist(PlaylistEntity(name = trimmed))
+            if (initialTracks.isNotEmpty()) {
+                val entries = initialTracks.mapIndexed { idx, track ->
+                    PlaylistEntryEntity(
+                        playlistId = playlistId,
+                        trackFilePath = track.filePath,
+                        positionIndex = idx
+                    )
+                }
+                dao.insertEntries(entries)
+            }
+            playlistId
+        }
+
+    suspend fun renamePlaylist(playlistId: Long, newName: String) = withContext(Dispatchers.IO) {
+        val dao = playlistDao ?: return@withContext
+        val trimmed = newName.trim()
+        if (trimmed.isNotEmpty()) {
+            dao.renamePlaylist(playlistId, trimmed)
+        }
+    }
+
+    suspend fun deletePlaylist(playlistId: Long) = withContext(Dispatchers.IO) {
+        playlistDao?.deletePlaylist(playlistId)
+    }
+
+    suspend fun addTracksToPlaylist(playlistId: Long, tracks: List<Track>) = withContext(Dispatchers.IO) {
+        val dao = playlistDao ?: return@withContext
+        if (tracks.isEmpty()) return@withContext
+        val startIdx = dao.getMaxPositionIndex(playlistId) + 1
+        val entries = tracks.mapIndexed { offset, track ->
+            PlaylistEntryEntity(
+                playlistId = playlistId,
+                trackFilePath = track.filePath,
+                positionIndex = startIdx + offset
+            )
+        }
+        dao.insertEntries(entries)
+    }
+
+    suspend fun removeTrackFromPlaylist(playlistId: Long, positionIndex: Int) = withContext(Dispatchers.IO) {
+        val dao = playlistDao ?: return@withContext
+        val current = dao.getEntriesForPlaylistSnapshot(playlistId)
+            .sortedBy { it.positionIndex }
+            .map { it.trackFilePath }
+            .toMutableList()
+        if (positionIndex in current.indices) {
+            current.removeAt(positionIndex)
+            dao.replaceEntriesForPlaylist(playlistId, current)
+        }
+    }
+
+    suspend fun moveTrackInPlaylist(playlistId: Long, fromIndex: Int, toIndex: Int) = withContext(Dispatchers.IO) {
+        val dao = playlistDao ?: return@withContext
+        val current = dao.getEntriesForPlaylistSnapshot(playlistId)
+            .sortedBy { it.positionIndex }
+            .map { it.trackFilePath }
+            .toMutableList()
+        if (fromIndex in current.indices && toIndex in current.indices && fromIndex != toIndex) {
+            val moved = current.removeAt(fromIndex)
+            current.add(toIndex, moved)
+            dao.replaceEntriesForPlaylist(playlistId, current)
         }
     }
 

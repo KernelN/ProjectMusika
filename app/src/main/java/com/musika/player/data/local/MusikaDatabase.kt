@@ -5,9 +5,12 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.musika.player.data.local.dao.FolderDao
+import com.musika.player.data.local.dao.PlaylistDao
 import com.musika.player.data.local.dao.TrackDao
 import com.musika.player.data.local.dao.WebMetadataDao
 import com.musika.player.data.local.entity.FolderEntity
+import com.musika.player.data.local.entity.PlaylistEntity
+import com.musika.player.data.local.entity.PlaylistEntryEntity
 import com.musika.player.data.local.entity.TrackEntity
 import com.musika.player.data.local.entity.WebMetadataEntity
 
@@ -15,15 +18,18 @@ import com.musika.player.data.local.entity.WebMetadataEntity
     entities = [
         TrackEntity::class,
         FolderEntity::class,
-        WebMetadataEntity::class
+        WebMetadataEntity::class,
+        PlaylistEntity::class,
+        PlaylistEntryEntity::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class MusikaDatabase : RoomDatabase() {
     abstract fun trackDao(): TrackDao
     abstract fun folderDao(): FolderDao
     abstract fun webMetadataDao(): WebMetadataDao
+    abstract fun playlistDao(): PlaylistDao
 
     companion object {
         @Volatile

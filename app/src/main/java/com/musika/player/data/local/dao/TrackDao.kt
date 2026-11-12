@@ -44,6 +44,9 @@ interface TrackDao {
     @Update
     suspend fun updateTrack(track: TrackEntity)
 
+    @Query("DELETE FROM tracks WHERE filePath IN (:filePaths)")
+    suspend fun deleteTracksByPaths(filePaths: List<String>)
+
     @Query("DELETE FROM tracks WHERE filePath NOT IN (:activeFilePaths)")
     suspend fun pruneDeletedTracks(activeFilePaths: List<String>)
 

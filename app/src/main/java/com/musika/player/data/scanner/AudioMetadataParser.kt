@@ -30,6 +30,7 @@ object AudioMetadataParser {
     var customArtworkCacheDir: File? = null
 
     private val folderArtworkCache = ConcurrentHashMap<String, String>()
+    private val embeddedArtworkMemoCache = ConcurrentHashMap<String, String>()
 
     data class ParsedMetadata(
         val title: String,
@@ -52,6 +53,7 @@ object AudioMetadataParser {
 
     fun clearFolderArtworkMemoCache() {
         folderArtworkCache.clear()
+        embeddedArtworkMemoCache.clear()
     }
 
     fun parse(file: File): ParsedMetadata {
@@ -541,7 +543,17 @@ object AudioMetadataParser {
 
     private fun writeArtworkBytesToCache(buffer: ByteArray, offset: Int, length: Int): String? {
         return try {
-            val ext = if ((buffer[offset].toInt() and 0xFF) == 0x89) "png" else "jpg"
+            val firstByte = buffer[offset].toInt() and 0xFF
+            val ext = if (firstByte == 0x89) "png" else "jpg"
+            val sampleMid = buffer[offset + (length / 2)].toInt() and 0xFF
+            val sampleEnd = buffer[offset + length - 1].toInt() and 0xFF
+            val sampleQ1 = buffer[offset + (length / 4)].toInt() and 0xFF
+            val sampleQ3 = buffer[offset + ((length * 3) / 4)].toInt() and 0xFF
+            val fastMemoKey = "$length|$firstByte|$sampleQ1|$sampleMid|$sampleQ3|$sampleEnd"
+            embeddedArtworkMemoCache[fastMemoKey]?.let { cachedUri ->
+                return cachedUri
+            }
+
             val md = MessageDigest.getInstance("SHA-1")
             md.update(buffer, offset, length)
             val hashHex = md.digest().joinToString("") { "%02x".format(it) }
@@ -553,7 +565,9 @@ object AudioMetadataParser {
                     out.write(buffer, offset, length)
                 }
             }
-            outFile.toURI().toString()
+            val uriStr = outFile.toURI().toString()
+            embeddedArtworkMemoCache[fastMemoKey] = uriStr
+            uriStr
         } catch (_: Exception) {
             null
         }
