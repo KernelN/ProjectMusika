@@ -1,5 +1,6 @@
 package com.musika.player.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -61,7 +62,8 @@ data class MultiFolderSheetState(
 @OptIn(ExperimentalCoroutinesApi::class)
 class MusikaViewModel(
     private val repository: LibraryRepository,
-    private val settings: SettingsPreferences
+    private val settings: SettingsPreferences,
+    private val appContext: Context? = null
 ) : ViewModel() {
 
     val dualQueueEngine = DualQueueEngine(
@@ -75,7 +77,11 @@ class MusikaViewModel(
 
     val playbackState: StateFlow<DualQueueEngine.EngineState> = dualQueueEngine.state
 
-    val onlineControlCoordinator = OnlineControlCoordinator(localEngine = dualQueueEngine)
+    val onlineControlCoordinator = OnlineControlCoordinator(
+        localEngine = dualQueueEngine,
+        settings = settings,
+        context = appContext
+    )
     val onlineControlState: StateFlow<OnlineControlCoordinator.OnlineControlState> =
         onlineControlCoordinator.state
 
@@ -145,6 +151,10 @@ class MusikaViewModel(
     val artworkStyle: StateFlow<NowPlayingArtworkStyle> = settings.artworkStyle
     val showListTrackThumbnails: StateFlow<Boolean> = settings.showListTrackThumbnails
     val hudScale: StateFlow<Float> = settings.hudScale
+    val allowLanStreamingForMissingTracks: StateFlow<Boolean> = settings.allowLanStreamingForMissingTracks
+    val listenLocallyWhenSyncedTargetIsRemote: StateFlow<Boolean> = settings.listenLocallyWhenSyncedTargetIsRemote
+    val supabaseUrl: StateFlow<String> = settings.supabaseUrl
+    val supabaseAnonKey: StateFlow<String> = settings.supabaseAnonKey
 
     val playlists: StateFlow<List<Playlist>> = repository.getPlaylistsFlow()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -202,6 +212,25 @@ class MusikaViewModel(
                 _currentFolderNode.value = repository.getFolderNode(path)
             }
         }
+        if (appContext != null) {
+            onlineControlCoordinator.startNetworking()
+            viewModelScope.launch {
+                deduplicatedSongs.collect { groups ->
+                    val tracks = groups.map { it.primaryTrack }
+                    if (tracks.isNotEmpty()) {
+                        onlineControlCoordinator.updateLocalLibrary(
+                            tracks = tracks,
+                            rootPath = musicalRootPath.value
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        onlineControlCoordinator.stopNetworking()
     }
 
     fun selectTab(tab: MusikaTab) {
@@ -388,7 +417,23 @@ class MusikaViewModel(
     // =========================================================================
 
     fun playSongGroup(group: DeduplicatedTrackGroup, contextGroups: List<DeduplicatedTrackGroup>, contextLabel: String) {
+        val devId = onlineControlCoordinator.effectiveLocalDeviceId()
+        val browsingId = onlineControlState.value.browsingDeviceId
         val contextPrimaryTracks = contextGroups.map { it.primaryTrack }
+        if (browsingId != devId && browsingId.isNotBlank()) {
+            onlineControlCoordinator.sendRemoteCommand(
+                command = RemoteSyncContract.SyncCommand.PlayNow(
+                    track = RemoteSyncContract.RemoteTrackDescriptor.fromTrack(group.primaryTrack),
+                    contextTracks = contextPrimaryTracks.map {
+                        RemoteSyncContract.RemoteTrackDescriptor.fromTrack(it)
+                    }
+                ),
+                localLibrary = deduplicatedSongs.value.map { it.primaryTrack },
+                targetDeviceId = browsingId
+            )
+            _statusBannerMessage.value = "Playing '${group.primaryTrack.title}' on remote device"
+            return
+        }
         dualQueueEngine.playFromContext(
             selectedTrack = group.primaryTrack,
             contextTracks = contextPrimaryTracks,
@@ -689,16 +734,95 @@ class MusikaViewModel(
 
     fun applyRemoteSyncCommandJson(payload: String, availableTracks: List<Track>) {
         val command = RemoteSyncContract.deserializeCommand(payload)
-        dualQueueEngine.applySyncCommand(command, availableTracks)
+        dualQueueEngine.applySyncCommand(
+            command = command,
+            localLibrary = availableTracks,
+            allowLanStreaming = settings.allowLanStreamingForMissingTracks.value
+        )
+    }
+
+    fun signUpOnlineAccount(username: String, password: String) {
+        viewModelScope.launch {
+            runCatching {
+                onlineControlCoordinator.signUpUsername(username, password)
+            }.onSuccess { sess ->
+                _statusBannerMessage.value = "Signed up & synced as ${sess.username}"
+            }.onFailure { err ->
+                _statusBannerMessage.value = err.message ?: "Account registration failed"
+            }
+        }
+    }
+
+    fun signInOnlineAccount(username: String, password: String) {
+        viewModelScope.launch {
+            runCatching {
+                onlineControlCoordinator.signInUsername(username, password)
+            }.onSuccess { sess ->
+                _statusBannerMessage.value = "Signed in as ${sess.username}"
+            }.onFailure { err ->
+                _statusBannerMessage.value = err.message ?: "Sign in failed"
+            }
+        }
+    }
+
+    fun signOutOnlineAccount() {
+        onlineControlCoordinator.signOutAccount()
+        _statusBannerMessage.value = "Signed out of online account"
+    }
+
+    fun pairViaQrOrPin(input: String, manualHost: String? = null, manualPort: Int = 8765) {
+        viewModelScope.launch {
+            runCatching {
+                onlineControlCoordinator.pairViaQrOrPinInput(input, manualHost, manualPort)
+            }.onSuccess { msg ->
+                _statusBannerMessage.value = msg
+            }.onFailure { err ->
+                _statusBannerMessage.value = err.message ?: "Pairing failed"
+            }
+        }
+    }
+
+    fun connectManualLanHost(host: String, port: Int) {
+        viewModelScope.launch {
+            val ok = onlineControlCoordinator.tryLanFirstThenOnlineFallback(host.trim(), port)
+            _statusBannerMessage.value = if (ok) {
+                "Connected directly via LAN ($host:$port)"
+            } else {
+                "LAN unreachable at $host:$port — switched to Online Fallback"
+            }
+        }
+    }
+
+    fun updateSupabaseConfig(url: String, anonKey: String) {
+        onlineControlCoordinator.updateSupabaseConfig(url, anonKey)
+        _statusBannerMessage.value = "Supabase configuration updated"
+    }
+
+    fun setAllowLanStreamingForMissingTracks(enabled: Boolean) {
+        onlineControlCoordinator.setAllowLanStreamingForMissingTracks(enabled)
+        _statusBannerMessage.value = if (enabled) {
+            "LAN audio streaming fallback enabled"
+        } else {
+            "Strict local metadata matching restored (LAN streaming OFF)"
+        }
+    }
+
+    fun setListenLocallyWhenSyncedTargetIsRemote(enabled: Boolean) {
+        onlineControlCoordinator.setListenLocallyWhenSyncedTargetIsRemote(enabled)
+    }
+
+    fun setBrowsingDeviceId(deviceId: String) {
+        onlineControlCoordinator.setBrowsingDeviceId(deviceId)
     }
 
     class Factory(
         private val repository: LibraryRepository,
-        private val settings: SettingsPreferences
+        private val settings: SettingsPreferences,
+        private val appContext: Context? = null
     ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return MusikaViewModel(repository, settings) as T
+            return MusikaViewModel(repository, settings, appContext) as T
         }
     }
 }

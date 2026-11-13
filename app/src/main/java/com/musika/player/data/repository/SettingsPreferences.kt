@@ -3,8 +3,10 @@ package com.musika.player.data.repository
 import android.content.Context
 import android.content.SharedPreferences
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
+import com.musika.player.BuildConfig
 import com.musika.player.core.model.AlbumSortOption
 import com.musika.player.core.model.ArtistSortOption
 import com.musika.player.core.model.FolderSortOption
@@ -13,6 +15,8 @@ import com.musika.player.core.model.NowPlayingArtworkStyle
 import com.musika.player.core.model.RandomMode
 import com.musika.player.core.model.SongSortOption
 import java.io.File
+import java.security.SecureRandom
+import java.util.UUID
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -129,6 +133,63 @@ class SettingsPreferences(context: Context) {
     )
     val hudScale: StateFlow<Float> = _hudScale.asStateFlow()
 
+    // Stage 2: Stable device ID, Supabase overridable defaults, & LAN streaming flags
+    val localDeviceId: String = prefs.getString(KEY_LOCAL_DEVICE_ID, null)?.takeIf { it.isNotBlank() }
+        ?: "android-${UUID.randomUUID().toString().take(8)}".also {
+            prefs.edit().putString(KEY_LOCAL_DEVICE_ID, it).apply()
+        }
+
+    val defaultDeviceName: String = runCatching {
+        "${Build.MANUFACTURER.replaceFirstChar { it.uppercase() }} ${Build.MODEL}".trim()
+    }.getOrDefault("Android Phone")
+
+    private val _supabaseUrl = MutableStateFlow(
+        prefs.getString(KEY_SUPABASE_URL, null)?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.DEFAULT_SUPABASE_URL
+    )
+    val supabaseUrl: StateFlow<String> = _supabaseUrl.asStateFlow()
+
+    private val _supabaseAnonKey = MutableStateFlow(
+        prefs.getString(KEY_SUPABASE_ANON_KEY, null)?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.DEFAULT_SUPABASE_ANON_KEY
+    )
+    val supabaseAnonKey: StateFlow<String> = _supabaseAnonKey.asStateFlow()
+
+    // OFF by default per Stage 2 Q5 specification: transfer strictly gates on local metadata match;
+    // when OFF, missing queued items skip locally. Only streams over LAN if user explicitly enables.
+    private val _allowLanStreamingForMissingTracks = MutableStateFlow(
+        prefs.getBoolean(KEY_ALLOW_LAN_STREAMING, false)
+    )
+    val allowLanStreamingForMissingTracks: StateFlow<Boolean> =
+        _allowLanStreamingForMissingTracks.asStateFlow()
+
+    // OFF by default per Stage 2 Q6 specification: Synced Mode avoids echo with single audio output
+    private val _listenLocallyWhenSyncedTargetIsRemote = MutableStateFlow(
+        prefs.getBoolean(KEY_LISTEN_LOCALLY_IN_SYNCED, false)
+    )
+    val listenLocallyWhenSyncedTargetIsRemote: StateFlow<Boolean> =
+        _listenLocallyWhenSyncedTargetIsRemote.asStateFlow()
+
+    private val _cachedAuthUserId = MutableStateFlow(prefs.getString(KEY_AUTH_USER_ID, "") ?: "")
+    val cachedAuthUserId: StateFlow<String> = _cachedAuthUserId.asStateFlow()
+
+    private val _cachedAuthUsername = MutableStateFlow(prefs.getString(KEY_AUTH_USERNAME, "") ?: "")
+    val cachedAuthUsername: StateFlow<String> = _cachedAuthUsername.asStateFlow()
+
+    private val _cachedAccessToken = MutableStateFlow(prefs.getString(KEY_AUTH_ACCESS_TOKEN, "") ?: "")
+    val cachedAccessToken: StateFlow<String> = _cachedAccessToken.asStateFlow()
+
+    private val _cachedRefreshToken = MutableStateFlow(prefs.getString(KEY_AUTH_REFRESH_TOKEN, "") ?: "")
+    val cachedRefreshToken: StateFlow<String> = _cachedRefreshToken.asStateFlow()
+
+    private val _cachedPairSecretHmac = MutableStateFlow(
+        prefs.getString(KEY_PAIR_SECRET_HMAC, null)?.takeIf { it.isNotBlank() }
+            ?: generateRandomHexSecret().also {
+                prefs.edit().putString(KEY_PAIR_SECRET_HMAC, it).apply()
+            }
+    )
+    val cachedPairSecretHmac: StateFlow<String> = _cachedPairSecretHmac.asStateFlow()
+
     fun setMusicalRootPath(path: String) {
         val normalized = path.replace('\\', '/').trimEnd('/').ifEmpty { "/" }
         prefs.edit().putString(KEY_MUSICAL_ROOT_PATH, normalized).apply()
@@ -191,6 +252,69 @@ class SettingsPreferences(context: Context) {
         _hudScale.value = clamped
     }
 
+    fun setSupabaseConfig(url: String, anonKey: String) {
+        val cleanUrl = url.trim().trimEnd('/')
+        val cleanKey = anonKey.trim()
+        prefs.edit()
+            .putString(KEY_SUPABASE_URL, cleanUrl)
+            .putString(KEY_SUPABASE_ANON_KEY, cleanKey)
+            .apply()
+        _supabaseUrl.value = cleanUrl.ifBlank { BuildConfig.DEFAULT_SUPABASE_URL }
+        _supabaseAnonKey.value = cleanKey.ifBlank { BuildConfig.DEFAULT_SUPABASE_ANON_KEY }
+    }
+
+    fun setAllowLanStreamingForMissingTracks(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_ALLOW_LAN_STREAMING, enabled).apply()
+        _allowLanStreamingForMissingTracks.value = enabled
+    }
+
+    fun setListenLocallyWhenSyncedTargetIsRemote(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_LISTEN_LOCALLY_IN_SYNCED, enabled).apply()
+        _listenLocallyWhenSyncedTargetIsRemote.value = enabled
+    }
+
+    fun saveAuthSession(
+        userId: String,
+        username: String,
+        accessToken: String,
+        refreshToken: String,
+        pairSecretHmac: String? = null
+    ) {
+        val editor = prefs.edit()
+            .putString(KEY_AUTH_USER_ID, userId)
+            .putString(KEY_AUTH_USERNAME, username)
+            .putString(KEY_AUTH_ACCESS_TOKEN, accessToken)
+            .putString(KEY_AUTH_REFRESH_TOKEN, refreshToken)
+        if (!pairSecretHmac.isNullOrBlank()) {
+            editor.putString(KEY_PAIR_SECRET_HMAC, pairSecretHmac)
+            _cachedPairSecretHmac.value = pairSecretHmac
+        }
+        editor.apply()
+        _cachedAuthUserId.value = userId
+        _cachedAuthUsername.value = username
+        _cachedAccessToken.value = accessToken
+        _cachedRefreshToken.value = refreshToken
+    }
+
+    fun clearAuthSession() {
+        prefs.edit()
+            .remove(KEY_AUTH_USER_ID)
+            .remove(KEY_AUTH_USERNAME)
+            .remove(KEY_AUTH_ACCESS_TOKEN)
+            .remove(KEY_AUTH_REFRESH_TOKEN)
+            .apply()
+        _cachedAuthUserId.value = ""
+        _cachedAuthUsername.value = ""
+        _cachedAccessToken.value = ""
+        _cachedRefreshToken.value = ""
+    }
+
+    private fun generateRandomHexSecret(): String {
+        val bytes = ByteArray(32)
+        SecureRandom().nextBytes(bytes)
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
     fun resolveEffectiveScanRoot(): File {
         return if (_alwaysScanEntirePhone.value) {
             try {
@@ -217,6 +341,16 @@ class SettingsPreferences(context: Context) {
         const val KEY_ARTWORK_STYLE = "artwork_style"
         const val KEY_SHOW_LIST_THUMBNAILS = "show_list_thumbnails"
         const val KEY_HUD_SCALE = "hud_scale"
+        const val KEY_LOCAL_DEVICE_ID = "stage2_local_device_id"
+        const val KEY_SUPABASE_URL = "stage2_supabase_url"
+        const val KEY_SUPABASE_ANON_KEY = "stage2_supabase_anon_key"
+        const val KEY_ALLOW_LAN_STREAMING = "stage2_allow_lan_streaming"
+        const val KEY_LISTEN_LOCALLY_IN_SYNCED = "stage2_listen_locally_synced"
+        const val KEY_AUTH_USER_ID = "stage2_auth_user_id"
+        const val KEY_AUTH_USERNAME = "stage2_auth_username"
+        const val KEY_AUTH_ACCESS_TOKEN = "stage2_auth_access_token"
+        const val KEY_AUTH_REFRESH_TOKEN = "stage2_auth_refresh_token"
+        const val KEY_PAIR_SECRET_HMAC = "stage2_pair_secret_hmac"
 
         /**
          * Resolves an Android native folder picker (ACTION_OPEN_DOCUMENT_TREE) Uri into an

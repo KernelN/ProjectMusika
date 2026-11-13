@@ -1,5 +1,7 @@
 package com.musika.player.ui.components
 
+import android.graphics.Bitmap
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +21,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.qrcode.QRCodeWriter
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Add
@@ -777,17 +783,24 @@ fun SettingsDialog(
     artworkStyle: NowPlayingArtworkStyle,
     showListTrackThumbnails: Boolean,
     hudScale: Float,
+    allowLanStreamingForMissingTracks: Boolean = false,
+    supabaseUrl: String = "",
+    supabaseAnonKey: String = "",
     onLaunchNativeFolderPicker: () -> Unit,
     onSaveRootPath: (String) -> Unit,
     onToggleAlwaysScanEntirePhone: (Boolean) -> Unit,
     onSelectArtworkStyle: (NowPlayingArtworkStyle) -> Unit,
     onToggleListTrackThumbnails: (Boolean) -> Unit,
     onHudScaleChanged: (Float) -> Unit,
+    onToggleAllowLanStreaming: (Boolean) -> Unit = {},
+    onSaveSupabaseConfig: (String, String) -> Unit = { _, _ -> },
     onRequestStoragePermissions: () -> Unit,
     onDismiss: () -> Unit
 ) {
     var editedPath by remember(currentRootPath) { mutableStateOf(currentRootPath) }
     var showManualPathField by remember { mutableStateOf(false) }
+    var editedSbUrl by remember(supabaseUrl) { mutableStateOf(supabaseUrl) }
+    var editedSbKey by remember(supabaseAnonKey) { mutableStateOf(supabaseAnonKey) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -983,6 +996,58 @@ fun SettingsDialog(
 
                 HorizontalDivider()
 
+                // 5. Stage 2 Network, LAN Streaming Fallback & Supabase Project
+                Text(
+                    text = "Online Sync & LAN Transfer Rules",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = WinampAmberGold,
+                    fontWeight = FontWeight.Bold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "Allow LAN audio streaming for missing tracks",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Text(
+                            text = "OFF by default. Keep OFF for strict local-match-only Move Music Here.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = allowLanStreamingForMissingTracks,
+                        onCheckedChange = onToggleAllowLanStreaming
+                    )
+                }
+
+                OutlinedTextField(
+                    value = editedSbUrl,
+                    onValueChange = { editedSbUrl = it },
+                    label = { Text("Supabase Project URL") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = editedSbKey,
+                    onValueChange = { editedSbKey = it },
+                    label = { Text("Supabase Anon Key") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedButton(
+                    onClick = { onSaveSupabaseConfig(editedSbUrl, editedSbKey) },
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Save Supabase Keys", fontSize = 11.sp, maxLines = 1, softWrap = false)
+                }
+
+                HorizontalDivider()
+
                 OutlinedButton(
                     onClick = onRequestStoragePermissions,
                     modifier = Modifier.fillMaxWidth()
@@ -1000,6 +1065,9 @@ fun SettingsDialog(
         confirmButton = {
             Button(
                 onClick = {
+                    if (editedSbUrl != supabaseUrl || editedSbKey != supabaseAnonKey) {
+                        onSaveSupabaseConfig(editedSbUrl, editedSbKey)
+                    }
                     onSaveRootPath(editedPath)
                     onDismiss()
                 }
@@ -1022,20 +1090,62 @@ fun SettingsDialog(
  * 2. Switching between SYNCED_PLAYBACK (kept synchronized) and INDEPENDENT_CONCURRENT (2+ devices at the same time).
  * 3. Moving active music from one device to another strictly when both devices have a song with matching metadata loaded.
  */
+private fun renderQrBitmap(content: String, sizePx: Int = 360): Bitmap? {
+    if (content.isBlank()) return null
+    return runCatching {
+        val bitMatrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, sizePx, sizePx)
+        Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.RGB_565).apply {
+            for (x in 0 until sizePx) {
+                for (y in 0 until sizePx) {
+                    setPixel(x, y, if (bitMatrix[x, y]) android.graphics.Color.WHITE else android.graphics.Color.rgb(11, 14, 20))
+                }
+            }
+        }
+    }.getOrNull()
+}
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun OnlineDeviceControlBottomSheet(
     onlineState: OnlineControlCoordinator.OnlineControlState,
     playbackState: DualQueueEngine.EngineState,
+    qrPairPayload: RemoteSyncContract.QrPairPayload? = null,
     onSelectSyncMode: (RemoteSyncContract.AccountDeviceSyncMode) -> Unit,
     onSendRemoteCommand: (RemoteSyncContract.SyncCommand, String) -> Unit,
     onMirrorCatalogToDevice: (String) -> Unit,
     onClearPeerCatalog: (String) -> Unit,
     onTransferPlaybackToDevice: (String) -> Unit,
+    onLaunchQrScanner: () -> Unit = {},
+    onPairViaQrOrPin: (String, String?) -> Unit = { _, _ -> },
+    onConnectManualLanHost: (String, Int) -> Unit = { _, _ -> },
+    onSignInUsername: (String, String) -> Unit = { _, _ -> },
+    onSignUpUsername: (String, String) -> Unit = { _, _ -> },
+    onSignOutAccount: () -> Unit = {},
+    onToggleListenLocallyInSynced: (Boolean) -> Unit = {},
+    onSelectBrowsingDevice: (String) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     val currentTrackDescriptor = playbackState.currentTrack?.let { track ->
         RemoteSyncContract.RemoteTrackDescriptor.fromTrack(track)
+    }
+    var pairInput by remember { mutableStateOf("") }
+    var manualHost by remember { mutableStateOf("") }
+    var manualPort by remember { mutableStateOf("8765") }
+    var authUsername by remember { mutableStateOf(if (onlineState.username == "MusikaUser") "" else onlineState.username) }
+    var authPassword by remember { mutableStateOf("") }
+    var isSignUpMode by remember { mutableStateOf(false) }
+
+    val qrLink = remember(qrPairPayload) { qrPairPayload?.toQrDeepLink().orEmpty() }
+    val qrBitmap = remember(qrLink) { renderQrBitmap(qrLink) }
+    val transportLabel = when (onlineState.transportMode) {
+        RemoteSyncContract.ConnectionTransportMode.LAN_DIRECT -> "LAN DIRECT (${onlineState.connectedLanPeer ?: "Active"})"
+        RemoteSyncContract.ConnectionTransportMode.ONLINE_SUPABASE -> "SUPABASE ONLINE"
+        RemoteSyncContract.ConnectionTransportMode.OFFLINE_LOCAL -> "LOCAL OFFLINE (LAN Server Ready)"
+    }
+    val transportColor = when (onlineState.transportMode) {
+        RemoteSyncContract.ConnectionTransportMode.LAN_DIRECT -> WinampLedGreen
+        RemoteSyncContract.ConnectionTransportMode.ONLINE_SUPABASE -> SamsungBlue
+        RemoteSyncContract.ConnectionTransportMode.OFFLINE_LOCAL -> WinampAmberGold
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -1053,18 +1163,39 @@ fun OnlineDeviceControlBottomSheet(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Online Multi-Device Control",
+                        text = "Musika Connect — LAN & Online Sync",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Account: ${onlineState.accountId} • Active Target: ${onlineState.activeControllingDeviceId}",
+                        text = "$transportLabel • User: ${onlineState.username}",
                         style = MaterialTheme.typography.labelSmall,
-                        color = WinampLedGreen,
+                        color = transportColor,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    onlineState.lanHost?.let { ip ->
+                        Text(
+                            text = "Browser LAN Portal: http://$ip:${onlineState.lanPort}",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            color = WinampLedGreen
+                        )
+                    }
                 }
+            }
+
+            onlineState.statusMessage?.let { status ->
+                Text(
+                    text = status,
+                    fontSize = 11.sp,
+                    color = WinampAmberGold,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .padding(8.dp)
+                )
             }
 
             // 1. Account Sync vs. Independent Concurrent Mode Selector
@@ -1109,6 +1240,206 @@ fun OnlineDeviceControlBottomSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+
+            if (onlineState.syncMode == RemoteSyncContract.AccountDeviceSyncMode.SYNCED_PLAYBACK) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "Play Audio Here Too (Monitor Mode)",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "OFF by default to avoid double-speaker echo when synced to PC.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = onlineState.listenLocallyWhenSyncedTargetIsRemote,
+                        onCheckedChange = onToggleListenLocallyInSynced
+                    )
+                }
+            }
+
+            HorizontalDivider()
+
+            // Instant QR / 6-Digit PIN & Manual LAN Probe
+            Text(
+                text = "Instant Pair (QR / 6-Digit LAN PIN) & IP Probe",
+                style = MaterialTheme.typography.labelLarge,
+                color = WinampAmberGold,
+                fontWeight = FontWeight.Bold
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                qrBitmap?.let { bmp ->
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Musika Pair QR Code",
+                        modifier = Modifier
+                            .size(116.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .border(1.dp, SamsungBlue.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                    )
+                }
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "LAN PIN: ${onlineState.activePinCode}",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = WinampLedGreen
+                    )
+                    Button(
+                        onClick = onLaunchQrScanner,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Scan Web/PC QR Code", fontSize = 11.sp, maxLines = 1, softWrap = false)
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = pairInput,
+                    onValueChange = { pairInput = it },
+                    label = { Text("PIN or musika:// link") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1.4f)
+                )
+                OutlinedTextField(
+                    value = manualHost,
+                    onValueChange = { manualHost = it },
+                    label = { Text("Peer IP") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = manualPort,
+                    onValueChange = { manualPort = it },
+                    label = { Text("Port") },
+                    singleLine = true,
+                    modifier = Modifier.width(84.dp)
+                )
+                Button(
+                    onClick = { onPairViaQrOrPin(pairInput, manualHost.ifBlank { null }) },
+                    enabled = pairInput.isNotBlank(),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Pair PIN/QR", fontSize = 11.sp, maxLines = 1, softWrap = false)
+                }
+                OutlinedButton(
+                    onClick = {
+                        if (manualHost.isNotBlank()) {
+                            onConnectManualLanHost(manualHost, manualPort.toIntOrNull() ?: 8765)
+                        }
+                    },
+                    enabled = manualHost.isNotBlank(),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Probe LAN", fontSize = 11.sp, maxLines = 1, softWrap = false)
+                }
+            }
+
+            HorizontalDivider()
+
+            // Online Supabase Username Account
+            Text(
+                text = "Online Account (Username + Password)",
+                style = MaterialTheme.typography.labelLarge,
+                color = SamsungBlue,
+                fontWeight = FontWeight.Bold
+            )
+            if (onlineState.accountId != "musika-account-default" && onlineState.username != "MusikaUser") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Signed in as ${onlineState.username}",
+                        color = WinampLedGreen,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                    OutlinedButton(onClick = onSignOutAccount) {
+                        Text("Sign Out", fontSize = 11.sp)
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = authUsername,
+                        onValueChange = { authUsername = it },
+                        label = { Text("Username") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = authPassword,
+                        onValueChange = { authPassword = it },
+                        label = { Text("Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = !isSignUpMode,
+                        onClick = { isSignUpMode = false },
+                        label = { Text("Sign In", fontSize = 11.sp) }
+                    )
+                    FilterChip(
+                        selected = isSignUpMode,
+                        onClick = { isSignUpMode = true },
+                        label = { Text("Create Account", fontSize = 11.sp) }
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    Button(
+                        onClick = {
+                            if (isSignUpMode) onSignUpUsername(authUsername, authPassword)
+                            else onSignInUsername(authUsername, authPassword)
+                        },
+                        enabled = onlineState.supabaseConfigured && authUsername.isNotBlank() && authPassword.length >= 6
+                    ) {
+                        Text(if (isSignUpMode) "Register" else "Login", fontSize = 11.sp)
+                    }
+                }
+                if (!onlineState.supabaseConfigured) {
+                    Text(
+                        text = "Set Supabase URL + Anon Key in Settings (or scan a configured device QR). Direct LAN works offline!",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = WinampAmberGold
+                    )
                 }
             }
 
@@ -1243,9 +1574,26 @@ fun OnlineDeviceControlBottomSheet(
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        if (device.deviceId != onlineState.localDeviceId) {
+                        val isBrowsingThis = onlineState.browsingDeviceId == device.deviceId
+                        OutlinedButton(
+                            onClick = {
+                                onSelectBrowsingDevice(device.deviceId)
+                                onDismiss()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = if (isBrowsingThis) "Browsing Now" else "Browse Files",
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+
+                        if (!device.isThisDevice) {
                             OutlinedButton(
                                 onClick = {
                                     if (device.loadedTrackKeys.isEmpty()) {
@@ -1258,9 +1606,9 @@ fun OnlineDeviceControlBottomSheet(
                             ) {
                                 Text(
                                     text = if (device.loadedTrackKeys.isEmpty()) {
-                                        "Sync Catalog Metadata"
+                                        "Sync Catalog"
                                     } else {
-                                        "Clear Peer Metadata"
+                                        "Clear Cache"
                                     },
                                     fontSize = 11.sp,
                                     maxLines = 1,

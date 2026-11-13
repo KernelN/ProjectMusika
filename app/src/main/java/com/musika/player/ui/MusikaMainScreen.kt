@@ -161,6 +161,7 @@ fun MusikaMainScreen(
     viewModel: MusikaViewModel,
     onRequestStoragePermissions: () -> Unit,
     onLaunchNativeFolderPicker: () -> Unit = {},
+    onLaunchQrScanner: () -> Unit = {},
     onExitApp: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -200,8 +201,29 @@ fun MusikaMainScreen(
     val showSettingsDialog by viewModel.showSettingsDialog.collectAsState()
     val musicalRootPath by viewModel.musicalRootPath.collectAsState()
     val alwaysScanEntirePhone by viewModel.alwaysScanEntirePhone.collectAsState()
+    val allowLanStreaming by viewModel.allowLanStreamingForMissingTracks.collectAsState()
+    val supabaseUrl by viewModel.supabaseUrl.collectAsState()
+    val supabaseAnonKey by viewModel.supabaseAnonKey.collectAsState()
     val isScanning by viewModel.isScanning.collectAsState()
     val statusBanner by viewModel.statusBannerMessage.collectAsState()
+    val localDevId = remember(viewModel) { viewModel.onlineControlCoordinator.effectiveLocalDeviceId() }
+    val isBrowsingRemote = onlineControlState.browsingDeviceId != localDevId && onlineControlState.browsingDeviceId.isNotBlank()
+    val effectiveSongs = remember(isBrowsingRemote, onlineControlState, deduplicatedSongs) {
+        if (!isBrowsingRemote) {
+            deduplicatedSongs
+        } else {
+            val remoteTracks = viewModel.onlineControlCoordinator.getActiveBrowsingTracks(
+                deduplicatedSongs.map { it.primaryTrack }
+            )
+            remoteTracks.map { t ->
+                DeduplicatedTrackGroup(
+                    normalizedKey = t.normalizedKey,
+                    primaryTrack = t,
+                    allVariants = listOf(t)
+                )
+            }
+        }
+    }
 
     val tabs = MusikaTab.entries
     val pagerState = rememberPagerState(
@@ -357,10 +379,15 @@ fun MusikaMainScreen(
                                 }
 
                                 IconButton(onClick = { viewModel.setShowOnlineControlSheet(true) }) {
+                                    val transportColor = when (onlineControlState.transportMode) {
+                                        com.musika.player.core.sync.RemoteSyncContract.ConnectionTransportMode.LAN_DIRECT -> WinampLedGreen
+                                        com.musika.player.core.sync.RemoteSyncContract.ConnectionTransportMode.ONLINE_SUPABASE -> SamsungBlue
+                                        com.musika.player.core.sync.RemoteSyncContract.ConnectionTransportMode.OFFLINE_LOCAL -> Color.LightGray
+                                    }
                                     Icon(
                                         imageVector = Icons.Default.Devices,
                                         contentDescription = "Online Multi-Device Control",
-                                        tint = WinampLedGreen
+                                        tint = transportColor
                                     )
                                 }
                                 IconButton(onClick = { viewModel.triggerLibraryScan() }) {
@@ -374,6 +401,38 @@ fun MusikaMainScreen(
 
                         if (isScanning) {
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        }
+
+                        if (isBrowsingRemote) {
+                            val browsingName = onlineControlState.connectedDevices
+                                .firstOrNull { it.deviceId == onlineControlState.browsingDeviceId }
+                                ?.deviceName ?: onlineControlState.browsingDeviceId
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(WinampAmberGold.copy(alpha = 0.2f))
+                                    .clickable { viewModel.setBrowsingDeviceId(localDevId) }
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Remote Library: $browsingName (Tap plays remotely)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "Back to Phone",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = WinampLedGreen,
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
                         }
 
                         statusBanner?.let { msg ->
@@ -450,7 +509,7 @@ fun MusikaMainScreen(
                     when (tabs[pageIndex]) {
                         MusikaTab.SONGS -> SongsTabPage(
                             viewModel = viewModel,
-                            groups = deduplicatedSongs,
+                            groups = effectiveSongs,
                             sortOption = songSort,
                             activePlayingPath = activePlayingPath,
                             showListThumbnails = showListTrackThumbnails,
@@ -458,7 +517,7 @@ fun MusikaMainScreen(
                             webMetadataMap = webMetadataMap,
                             onSortChanged = viewModel::setSongSort,
                             onPlayGroup = { group ->
-                                viewModel.playSongGroup(group, deduplicatedSongs, "All Songs")
+                                viewModel.playSongGroup(group, effectiveSongs, "All Songs")
                             },
                             onOpenNowPlaying = { viewModel.setShowNowPlayingOverlay(true) },
                             onOpenVariantPicker = viewModel::openFormatVariantPicker,
@@ -721,9 +780,13 @@ fun MusikaMainScreen(
             }
 
             if (showOnlineControlSheet) {
+                val qrPayload = remember(onlineControlState.accountId, onlineControlState.activePinCode, onlineControlState.lanHost) {
+                    viewModel.onlineControlCoordinator.generateQrPayload()
+                }
                 OnlineDeviceControlBottomSheet(
                     onlineState = onlineControlState,
                     playbackState = playbackState,
+                    qrPairPayload = qrPayload,
                     onSelectSyncMode = viewModel::setAccountDeviceSyncMode,
                     onSendRemoteCommand = viewModel::sendRemoteControlCommand,
                     onMirrorCatalogToDevice = viewModel::mirrorCatalogToPeerDevice,
@@ -731,6 +794,14 @@ fun MusikaMainScreen(
                     onTransferPlaybackToDevice = { deviceId ->
                         viewModel.transferPlaybackToDevice(deviceId)
                     },
+                    onLaunchQrScanner = onLaunchQrScanner,
+                    onPairViaQrOrPin = { input, host -> viewModel.pairViaQrOrPin(input, host) },
+                    onConnectManualLanHost = viewModel::connectManualLanHost,
+                    onSignInUsername = viewModel::signInOnlineAccount,
+                    onSignUpUsername = viewModel::signUpOnlineAccount,
+                    onSignOutAccount = viewModel::signOutOnlineAccount,
+                    onToggleListenLocallyInSynced = viewModel::setListenLocallyWhenSyncedTargetIsRemote,
+                    onSelectBrowsingDevice = viewModel::setBrowsingDeviceId,
                     onDismiss = { viewModel.setShowOnlineControlSheet(false) }
                 )
             }
@@ -742,12 +813,17 @@ fun MusikaMainScreen(
                     artworkStyle = artworkStyle,
                     showListTrackThumbnails = showListTrackThumbnails,
                     hudScale = hudScale,
+                    allowLanStreamingForMissingTracks = allowLanStreaming,
+                    supabaseUrl = supabaseUrl,
+                    supabaseAnonKey = supabaseAnonKey,
                     onLaunchNativeFolderPicker = onLaunchNativeFolderPicker,
                     onSaveRootPath = viewModel::setMusicalRootFolder,
                     onToggleAlwaysScanEntirePhone = viewModel::setAlwaysScanEntirePhone,
                     onSelectArtworkStyle = viewModel::setArtworkStyle,
                     onToggleListTrackThumbnails = viewModel::setShowListTrackThumbnails,
                     onHudScaleChanged = viewModel::setHudScale,
+                    onToggleAllowLanStreaming = viewModel::setAllowLanStreamingForMissingTracks,
+                    onSaveSupabaseConfig = viewModel::updateSupabaseConfig,
                     onRequestStoragePermissions = onRequestStoragePermissions,
                     onDismiss = { viewModel.setShowSettingsDialog(false) }
                 )

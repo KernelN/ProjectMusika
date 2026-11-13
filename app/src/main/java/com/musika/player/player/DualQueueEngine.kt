@@ -581,46 +581,78 @@ class DualQueueEngine(
     /**
      * Resolves and executes a [RemoteSyncContract.SyncCommand] using Local-Match-First against [localLibrary].
      */
-    fun applySyncCommand(command: RemoteSyncContract.SyncCommand, localLibrary: List<Track> = emptyList()) {
+    fun applySyncCommand(
+        command: RemoteSyncContract.SyncCommand,
+        localLibrary: List<Track> = emptyList(),
+        allowLanStreaming: Boolean = false,
+        playAudio: Boolean = true
+    ) {
         when (command) {
-            is RemoteSyncContract.SyncCommand.Play -> setPlaying(true)
+            is RemoteSyncContract.SyncCommand.Play -> {
+                if (playAudio) setPlaying(true) else _state.value = _state.value.copy(isPlaying = true)
+            }
             is RemoteSyncContract.SyncCommand.Pause -> setPlaying(false)
-            is RemoteSyncContract.SyncCommand.TogglePlayPause -> togglePlayPause()
-            is RemoteSyncContract.SyncCommand.SeekTo -> seekTo(command.positionMs)
+            is RemoteSyncContract.SyncCommand.TogglePlayPause -> {
+                if (playAudio) togglePlayPause() else _state.value = _state.value.copy(isPlaying = !_state.value.isPlaying)
+            }
+            is RemoteSyncContract.SyncCommand.SeekTo -> {
+                if (playAudio) seekTo(command.positionMs) else _state.value = _state.value.copy(positionMs = command.positionMs)
+            }
             is RemoteSyncContract.SyncCommand.SkipNext -> skipToNext(autoTriggered = false)
             is RemoteSyncContract.SyncCommand.SkipPrevious -> skipToPrevious()
             is RemoteSyncContract.SyncCommand.SetRandom -> setRandomMode(command.mode)
             is RemoteSyncContract.SyncCommand.SetLoop -> setLoopMode(command.mode)
             is RemoteSyncContract.SyncCommand.Enqueue -> {
-                val matched = resolveRemoteDescriptor(command.track, localLibrary)
+                val matched = resolveRemoteDescriptor(command.track, localLibrary, allowLanStreaming)
                 if (command.immediate) enqueueImmediate(matched) else enqueueAtEnd(matched)
             }
             is RemoteSyncContract.SyncCommand.PlayNow -> {
-                val matchedPrimary = resolveRemoteDescriptor(command.track, localLibrary)
-                val matchedContext = command.contextTracks.map { resolveRemoteDescriptor(it, localLibrary) }
-                playFromContext(matchedPrimary, matchedContext, "Remote Sync")
+                val matchedPrimary = resolveRemoteDescriptor(command.track, localLibrary, allowLanStreaming)
+                val matchedContext = command.contextTracks.map {
+                    resolveRemoteDescriptor(it, localLibrary, allowLanStreaming)
+                }
+                if (playAudio) {
+                    playFromContext(matchedPrimary, matchedContext, "Remote Sync")
+                } else {
+                    _state.value = _state.value.copy(
+                        currentTrack = matchedPrimary,
+                        isPlaying = true,
+                        positionMs = 0L,
+                        standardQueue = matchedContext,
+                        activeContextName = "Remote Sync"
+                    )
+                    playbackDriver?.onPlayStateChanged(false)
+                }
             }
             is RemoteSyncContract.SyncCommand.StateUpdate -> {
-                applyRemoteSnapshot(command.snapshot, localLibrary)
+                applyRemoteSnapshot(command.snapshot, localLibrary, allowLanStreaming, playAudio)
             }
             is RemoteSyncContract.SyncCommand.SetAccountSyncMode -> {
                 // Handled at OnlineControlCoordinator level
             }
             is RemoteSyncContract.SyncCommand.TransferPlayback -> {
-                applyRemoteSnapshot(command.snapshot, localLibrary)
+                applyRemoteSnapshot(command.snapshot, localLibrary, allowLanStreaming, playAudio)
             }
         }
     }
 
     private fun applyRemoteSnapshot(
         snap: RemoteSyncContract.PlaybackSnapshot,
-        localLibrary: List<Track>
+        localLibrary: List<Track>,
+        allowLanStreaming: Boolean = false,
+        playAudio: Boolean = true
     ) {
         setRandomMode(snap.randomMode)
         setLoopMode(snap.loopMode)
-        val matchedCurrent = snap.currentTrack?.let { resolveRemoteDescriptor(it, localLibrary) }
-        val matchedPriority = snap.priorityQueue.map { resolveRemoteDescriptor(it, localLibrary) }
-        val matchedStandard = snap.standardQueue.map { resolveRemoteDescriptor(it, localLibrary) }
+        val matchedCurrent = snap.currentTrack?.let {
+            resolveRemoteDescriptor(it, localLibrary, allowLanStreaming)
+        }
+        val matchedPriority = snap.priorityQueue.map {
+            resolveRemoteDescriptor(it, localLibrary, allowLanStreaming)
+        }
+        val matchedStandard = snap.standardQueue.map {
+            resolveRemoteDescriptor(it, localLibrary, allowLanStreaming)
+        }
         _state.value = _state.value.copy(
             currentTrack = matchedCurrent,
             isPlaying = snap.isPlaying,
@@ -629,22 +661,29 @@ class DualQueueEngine(
             standardQueue = matchedStandard,
             activeContextName = snap.activeContextName
         )
-        if (matchedCurrent != null) {
+        if (playAudio && matchedCurrent != null) {
             playbackDriver?.onLoadAndPlayTrack(matchedCurrent, snap.positionMs, snap.isPlaying)
+        } else {
+            playbackDriver?.onPlayStateChanged(false)
         }
     }
 
     private fun resolveRemoteDescriptor(
         descriptor: RemoteSyncContract.RemoteTrackDescriptor,
-        localLibrary: List<Track>
+        localLibrary: List<Track>,
+        allowLanStreaming: Boolean = false
     ): Track {
         val localMatch = localLibrary.firstOrNull { local ->
             descriptor.matchesLocal(local.relativePath, local.normalizedKey, local.durationMs)
         }
         if (localMatch != null) return localMatch
 
-        // Fallback to LAN stream URI if not present locally
-        val fallbackPath = descriptor.lanStreamUri ?: descriptor.relativePathFromRoot
+        // Only stream over LAN if explicitly enabled in Settings (OFF by default)
+        val fallbackPath = if (allowLanStreaming) {
+            descriptor.lanStreamUri ?: descriptor.relativePathFromRoot
+        } else {
+            descriptor.relativePathFromRoot
+        }
         return Track(
             filePath = fallbackPath,
             relativePath = descriptor.relativePathFromRoot,

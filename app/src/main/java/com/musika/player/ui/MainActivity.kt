@@ -15,6 +15,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import com.musika.player.MusikaApplication
 import com.musika.player.data.repository.LibraryRepository
 import com.musika.player.data.repository.SettingsPreferences
@@ -43,7 +45,15 @@ class MainActivity : ComponentActivity() {
     }
 
     val viewModel: MusikaViewModel by viewModels {
-        MusikaViewModel.Factory(libraryRepository, settingsPreferences)
+        MusikaViewModel.Factory(libraryRepository, settingsPreferences, applicationContext)
+    }
+
+    private val qrScannerLauncher = registerForActivityResult(ScanContract()) { result ->
+        val contents = result?.contents
+        if (!contents.isNullOrBlank()) {
+            viewModel.pairViaQrOrPin(contents)
+            Toast.makeText(this, "Pairing with QR code...", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private val audioPermissionLauncher = registerForActivityResult(
@@ -89,6 +99,8 @@ class MainActivity : ComponentActivity() {
         // Attach DualQueueEngine to the real ExoPlayer / MediaSessionService bridge
         MusikaPlaybackService.attachEngineToExoPlayer(applicationContext, viewModel.dualQueueEngine)
 
+        handlePairDeepLinkIntent(intent)
+
         // Request MANAGE_EXTERNAL_STORAGE (with fallback to READ_MEDIA_AUDIO) + POST_NOTIFICATIONS once at setup
         if (!settingsPreferences.hasRequestedInitialPermissions.value) {
             settingsPreferences.markInitialPermissionsRequested()
@@ -104,10 +116,35 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onRequestStoragePermissions = ::requestStorageAndNotificationPermissions,
                     onLaunchNativeFolderPicker = ::launchNativeFolderPicker,
+                    onLaunchQrScanner = ::launchQrCodeScanner,
                     onExitApp = { finish() }
                 )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePairDeepLinkIntent(intent)
+    }
+
+    private fun handlePairDeepLinkIntent(intent: Intent?) {
+        val dataStr = intent?.dataString ?: return
+        if (dataStr.startsWith("musika://pair", ignoreCase = true)) {
+            viewModel.pairViaQrOrPin(dataStr)
+            viewModel.setShowOnlineControlSheet(true)
+        }
+    }
+
+    private fun launchQrCodeScanner() {
+        val options = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Scan Musika Web or Desktop QR Code")
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }
+        qrScannerLauncher.launch(options)
     }
 
     private fun launchNativeFolderPicker() {
