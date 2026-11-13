@@ -75,3 +75,15 @@ Desktop.ini
 .kotlin/
 *.swp
 *~
+
+# Web PWA & Electron Desktop dependencies / build artifacts
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+web/.env
+web/.env.*
+!web/.env.example
+desktop/node_modules/
+desktop/dist/
+desktop/release/
+desktop/out/

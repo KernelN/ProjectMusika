@@ -1,9 +1,25 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     kotlin("plugin.serialization")
     id("com.google.devtools.ksp")
+}
+
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) {
+        f.inputStream().use { load(it) }
+    }
+}
+
+fun resolveBuildConfigString(key: String): String {
+    val raw = localProps.getProperty(key)
+        ?: System.getenv(key)
+        ?: ""
+    return raw.replace("\\", "\\\\").replace("\"", "\\\"")
 }
 
 android {
@@ -14,8 +30,19 @@ android {
         applicationId = "com.musika.player"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "2.0.0"
+
+        buildConfigField(
+            "String",
+            "DEFAULT_SUPABASE_URL",
+            "\"${resolveBuildConfigString("SUPABASE_URL")}\""
+        )
+        buildConfigField(
+            "String",
+            "DEFAULT_SUPABASE_ANON_KEY",
+            "\"${resolveBuildConfigString("SUPABASE_ANON_KEY")}\""
+        )
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -61,6 +88,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     lint {
@@ -71,7 +99,11 @@ android {
 
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += setOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "META-INF/INDEX.LIST",
+                "META-INF/io.netty.versions.properties"
+            )
         }
     }
 
@@ -119,6 +151,19 @@ dependencies {
     // Coil for album artwork
     implementation("io.coil-kt:coil-compose:2.7.0")
 
+    // Stage 2 Networking: Embedded Ktor CIO LAN Server + OkHttp Supabase & WS Client
+    val ktorVersion = "2.3.12"
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("io.ktor:ktor-server-core-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-cio-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-websockets-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-partial-content-jvm:$ktorVersion")
+    implementation("io.ktor:ktor-server-auto-head-response-jvm:$ktorVersion")
+
+    // Stage 2 QR Generation & Camera Scanning
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
@@ -126,6 +171,7 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.13")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
